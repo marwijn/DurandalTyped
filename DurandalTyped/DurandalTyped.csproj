@@ -163,7 +163,10 @@
     <Content Include="App\viewmodels\shell.js">
       <DependentUpon>shell.ts</DependentUpon>
     </Content>
-    <Content Include="App\viewmodels\welcome.js" />
+    <TypeScriptCompile Include="App\viewmodels\welcome.ts" />
+    <Content Include="App\viewmodels\welcome.js">
+      <DependentUpon>welcome.ts</DependentUpon>
+    </Content>
     <Content Include="App\views\detail.html" />
     <Content Include="App\views\flickr.html" />
     <Content Include="App\views\shell.html" />
