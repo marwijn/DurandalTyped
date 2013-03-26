@@ -163,7 +163,6 @@
     <Content Include="App\viewmodels\shell.js">
       <DependentUpon>shell.ts</DependentUpon>
     </Content>
-    <Content Include="App\viewmodels\shell_.js" />
     <Content Include="App\viewmodels\welcome.js" />
     <Content Include="App\views\detail.html" />
     <Content Include="App\views\flickr.html" />
