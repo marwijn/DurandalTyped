@@ -136,6 +136,10 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
+    <TypeScriptCompile Include="App\durandalts\rebind.ts" />
+    <Content Include="App\durandalts\rebind.js">
+      <DependentUpon>rebind.ts</DependentUpon>
+    </Content>
     <Content Include="App\durandal\amd\almond-custom.js" />
     <Content Include="App\durandal\amd\optimizer.exe" />
     <Content Include="App\durandal\amd\r.js" />
@@ -158,7 +162,10 @@
     <Content Include="App\durandal\widget.js" />
     <Content Include="App\main-built.js" />
     <Content Include="App\main.js" />
-    <Content Include="App\viewmodels\flickr.js" />
+    <TypeScriptCompile Include="App\viewmodels\flickr.ts" />
+    <Content Include="App\viewmodels\flickr.js">
+      <DependentUpon>flickr.ts</DependentUpon>
+    </Content>
     <TypeScriptCompile Include="App\viewmodels\shell.ts" />
     <Content Include="App\viewmodels\shell.js">
       <DependentUpon>shell.ts</DependentUpon>
