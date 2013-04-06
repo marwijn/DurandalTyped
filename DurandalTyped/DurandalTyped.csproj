@@ -137,6 +137,10 @@
   </ItemGroup>
   <ItemGroup>
     <TypeScriptCompile Include="App\durandalts\rebind.ts" />
+    <TypeScriptCompile Include="App\durandalts\Durandal.ts" />
+    <Content Include="App\durandalts\Durandal.js">
+      <DependentUpon>Durandal.ts</DependentUpon>
+    </Content>
     <Content Include="App\durandalts\rebind.js">
       <DependentUpon>rebind.ts</DependentUpon>
     </Content>

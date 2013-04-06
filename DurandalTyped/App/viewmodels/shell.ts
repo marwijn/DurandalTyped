@@ -21,6 +21,6 @@ class Shell {
 }
 
 
-define(['durandal/plugins/router', 'durandal/app', 'durandal/system'], function (router, app: App, system) {
-    return new Shell(router, app);
-});
+//define(['durandal/plugins/router', 'durandal/app'], function (router, app: App) {
+//    return new Shell(router, app);
+//});

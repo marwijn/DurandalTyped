@@ -11,11 +11,4 @@ var Shell = (function () {
     };
     return Shell;
 })();
-define([
-    'durandal/plugins/router', 
-    'durandal/app', 
-    'durandal/system'
-], function (router, app, system) {
-    return new Shell(router, app);
-});
 //@ sourceMappingURL=shell.js.map

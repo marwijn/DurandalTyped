@@ -1,6 +1,6 @@
 var Welcome = (function () {
     function Welcome() {
-        this.displayName = 'Welcome to the Durandal Starter Kit!';
+        this.displayName = 'XXX Welcome to the Durandal Starter Kit!';
         this.description = 'Durandal is a cross-device, cross-platform client framework written in JavaScript and designed to make Single Page Applications (SPAs) easy to create and maintain.';
         this.features = [
             'Clean MV* Architecture', 
@@ -20,7 +20,5 @@ var Welcome = (function () {
     };
     return Welcome;
 })();
-define([], function () {
-    return new Welcome();
-});
+Welcome.prototype['__classname__'] = 'Welcome';
 //@ sourceMappingURL=welcome.js.map

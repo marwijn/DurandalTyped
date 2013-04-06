@@ -40,8 +40,8 @@ module DurandalTyped
     }
 }
 
-define(['durandal/http', 'durandal/app', 'durandalts/rebind'], function (http, app, rebind) {
-    var flickr = new DurandalTyped.Flickr(app, http);
-    rebind(flickr);
-    return flickr;
-});
+//define(['durandal/http', 'durandal/app', 'durandalts/rebind'], function (http, app, rebind) {
+//    var flickr = new DurandalTyped.Flickr(app, http);
+//    rebind(flickr);
+//    return flickr;
+//});

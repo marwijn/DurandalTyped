@@ -505,3 +505,102 @@ declare module "durandal/plugins/router" {
       */
     export var activate: (defaultRoute: string) => JQueryPromise;
 }
+
+
+interface routeInfo {
+        url: string;
+        moduleId: string;
+        name: string;
+        visible: bool;
+};
+
+interface Router
+    {
+    /**
+      * observable that is called when the router is ready
+      */
+    ready: KnockoutObservableBool;
+    /**
+      * An observable array containing all route info objects.
+      */
+    allRoutes: KnockoutObservableArray;
+    /**
+      * An observable array containing route info objects configured with visible:true (or by calling the mapNav function).
+      */
+    visibleRoutes: KnockoutObservableArray;
+    /**
+      * An observable boolean which is true while navigation is in process; false otherwise.
+      */
+    isNavigating: KnockoutObservableBool;
+    /**
+      * An observable whose value is the currently active item/module/page.
+      */
+    activeItem: IDurandalViewModelActiveItem;
+    /**
+      * An observable whose value is the currently active route.
+      */
+    activeRoute: KnockoutObservableAny;
+    /**
+      * called after an a new module is composed
+      */
+    afterCompose: () => void;
+    /**
+      * Causes the router to move backwards in page history.
+      */
+    navigateBack: () => void;
+    /**
+      * Use router default convention.
+      */
+    useConvention: () => void;
+    /**
+      * Causes the router to navigate to a specific url.
+      */
+    navigateTo: (url: string) => void;
+    /**
+      * replaces the windows.location w/ the url
+      */
+    replaceLocation: (url: string) => void;
+    /**
+      * akes a route in and returns a calculated name.
+      */
+    convertRouteToName: (route: string) => string;
+    /**
+      * Takes a route in and returns a calculated moduleId. Simple transformations of this can be done via the useConvention function above. For more advanced transformations, you can override this function.
+      */
+    convertRouteToModuleId: (url: string) => string;
+    /**
+      * This can be overwritten to provide your own convention for automatically converting routes to module ids.
+      */
+    autoConvertRouteToModuleId: (url: string) => string;
+    /**
+      * This should not normally be overwritten. But advanced users can override this to completely transform the developer's routeInfo input into the final version used to configure the router.
+      */
+    prepareRouteInfo: (info: routeInfo) => void;
+    /**
+      * This should not normally be overwritten. But advanced users can override this to completely transform the developer's routeInfo input into the final version used to configure the router.
+      */
+    handleInvalidRoute: (route: routeInfo, parameters: any) => void;
+    /**
+      * Once the router is required, you can call router.mapAuto(). This is the most basic configuration option. When you call this function (with no parameters) it tells the router to directly correlate route parameters to module names in the viewmodels folder.
+      */
+    mapAuto: (path?: string) => void;
+    /**
+      * Works the same as mapRoute except that routes are automatically added to the visibleRoutes array.
+      */
+    mapNav: (url: string, moduleId: string, name: string) => routeInfo;
+    /**
+      * You can pass a single routeInfo to this function, or you can pass the basic configuration parameters. url is your url pattern, moduleId is the module path this pattern will map to, name is used as the document title and visible determines whether or not to include it in the router's visibleRoutes array for easy navigation UI binding.
+      */
+    mapRoute: (urlOrRouteInfo: any, moduleId?: string, name?: string, visible?: bool) => routeInfo;
+    /**
+      * This function takes an array of routeInfo objects or a single routeInfo object and uses it to configure the router. The finalized routeInfo (or array of infos) is returned.
+      */
+    map: {
+        (routeOrRouteArray: string): void;
+        (routeOrRouteArray: string[]): void;
+    };
+    /**
+      * After you've configured the router, you need to activate it. This is usually done in your shell. The activate function of the router returns a promise that resolves when the router is ready to start. To use the router, you should add an activate function to your shell and return the result from that. The application startup infrastructure of Durandal will detect your shell's activate function and call it at the appropriate time, waiting for it's promise to resolve. This allows Durandal to properly orchestrate the timing of composition and databinding along with animations and splash screen display.
+      */
+    activate: (defaultRoute: string) => JQueryPromise;
+}
