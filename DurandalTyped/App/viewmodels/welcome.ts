@@ -2,7 +2,7 @@
 
 class Welcome {
 
-    displayName = 'XXX Welcome to the Durandal Starter Kit!';
+    displayName = 'Welcome to the Durandal Starter Kit!';
     description = 'Durandal is a cross-device, cross-platform client framework written in JavaScript and designed to make Single Page Applications (SPAs) easy to create and maintain.';
     features = [
         'Clean MV* Architecture',

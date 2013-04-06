@@ -1,25 +1,10 @@
-///<reference path='../../Scripts/typings/requirejs/require.d.ts'/>
-///<reference path='../../Scripts/typings/durandal/durandal.d.ts'/>
-///<reference path='../../Scripts/typings/requirejs/require.d.ts'/>
-
-
-class App_Interface
-{
-    static name = "App";
-}
-
-class Router_Interface
-{
-    static name = "Router";
-}
-
 class Tioc
 {
     private map: { [key: string]: ()=>any; } = {};
 
-    public RegisterInstance(service: any, instance: any) : void
+    public RegisterInstance(serviceType: string, instance: any) : void
     {
-        this.map[service.name] = ()=>instance;
+        this.map[serviceType] = ()=>instance;
     }
 
     public Register(service: any): void
@@ -27,8 +12,9 @@ class Tioc
         this.map[service.prototype['__classname__']] = () => new service();
     }
 
-    Resolve(object: any) : any
+    Resolve(serviceType: string) : any
     {
-        return this.map[object.prototype['__classname__']]();
+        if (this.map[serviceType] == null) return null;
+        return this.map[serviceType]();
     }
 }

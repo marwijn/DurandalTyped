@@ -1,20 +1,10 @@
-var App_Interface = (function () {
-    function App_Interface() { }
-    App_Interface.name = "App";
-    return App_Interface;
-})();
-var Router_Interface = (function () {
-    function Router_Interface() { }
-    Router_Interface.name = "Router";
-    return Router_Interface;
-})();
 var Tioc = (function () {
     function Tioc() {
         this.map = {
         };
     }
-    Tioc.prototype.RegisterInstance = function (service, instance) {
-        this.map[service.name] = function () {
+    Tioc.prototype.RegisterInstance = function (serviceType, instance) {
+        this.map[serviceType] = function () {
             return instance;
         };
     };
@@ -23,8 +13,11 @@ var Tioc = (function () {
             return new service();
         };
     };
-    Tioc.prototype.Resolve = function (object) {
-        return this.map[object.prototype['__classname__']]();
+    Tioc.prototype.Resolve = function (serviceType) {
+        if(this.map[serviceType] == null) {
+            return null;
+        }
+        return this.map[serviceType]();
     };
     return Tioc;
 })();

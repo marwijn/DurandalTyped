@@ -12,25 +12,24 @@ define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plu
         //>>excludeEnd("build");
 
         var tioc = new Tioc();
-        tioc.RegisterInstance(App_Interface, app);
-        tioc.RegisterInstance(Router_Interface, router);
+        tioc.RegisterInstance("App", app);
+        tioc.RegisterInstance("Router", router);
         tioc.Register(Welcome);
-        var welcome = tioc.Resolve(Welcome);
         
         system.acquire=function() {
             var modules = Array.prototype.slice.call(arguments, 0);
             return system.defer(function (dfd) {
-                if (modules == "test") {
-                    dfd.resolve(welcome);
+                var object = tioc.Resolve(modules[0]);
+                if (object !== null) {
+                    dfd.resolve(object);
+                } else {
+                    require(modules, function () {
+                        var args = arguments;
+                        setTimeout(function () {
+                            dfd.resolve.apply(dfd, args);
+                        }, 1);
+                    });
                 }
-                
-
-                require(modules, function () {
-                    var args = arguments;
-                    setTimeout(function () {
-                        dfd.resolve.apply(dfd, args);
-                    }, 1);
-                });
             }).promise();
         };
         app.title = 'Durandal Starter Kit';
@@ -50,6 +49,6 @@ define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plu
 
             //viewmodels/shell
             //Show the app by setting the root view model for our application with a transition.
-            app.setRoot('test', 'entrance');
+            app.setRoot('Welcome', 'entrance');
         });
     });
