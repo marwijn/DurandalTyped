@@ -6,7 +6,7 @@ class Shell {
     app: any;
     router: any;
 
-    constructor(router: any, app: App) {
+    constructor(router: Router, app: App) {
         this.app = app;
         this.router = router;
     }
@@ -16,11 +16,10 @@ class Shell {
     }
 
     public activate(): any {
-        return this.router.activate('welcome');
+        return this.router.activate('Flickr');
     }
 }
 
-
-//define(['durandal/plugins/router', 'durandal/app'], function (router, app: App) {
-//    return new Shell(router, app);
-//});
+/// this code should be generated 
+Shell.prototype['__classname__'] = 'Shell';
+Shell.prototype['__constructorArguments__'] = ["Router", "App"];

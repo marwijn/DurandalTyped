@@ -2,6 +2,9 @@
 
 class Welcome {
 
+    constructor()
+    {
+    }
     displayName = 'Welcome to the Durandal Starter Kit!';
     description = 'Durandal is a cross-device, cross-platform client framework written in JavaScript and designed to make Single Page Applications (SPAs) easy to create and maintain.';
     features = [
@@ -25,5 +28,7 @@ class Welcome {
 
 }
 
+/// this code should be generated 
 Welcome.prototype['__classname__'] = 'Welcome';
+Welcome.prototype['__constructorArguments__'] = [];
 

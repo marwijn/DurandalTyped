@@ -4,8 +4,8 @@
     }
 });
 
-define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plugins/router'],
-    function(app, viewLocator, system, router) {
+define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plugins/router', 'durandal/http'],
+    function(app, viewLocator, system, router, http) {
 
         //>>excludeStart("build", true);
         system.debug(true);
@@ -14,7 +14,10 @@ define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plu
         var tioc = new Tioc();
         tioc.RegisterInstance("App", app);
         tioc.RegisterInstance("Router", router);
+        tioc.RegisterInstance("Http", http);
+        tioc.Register(Shell);
         tioc.Register(Welcome);
+        tioc.Register(Flickr);
         
         system.acquire=function() {
             var modules = Array.prototype.slice.call(arguments, 0);
@@ -42,13 +45,13 @@ define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plu
 
             //configure routing
             router.useConvention();
-            router.mapNav('welcome');
-            router.mapNav('flickr');
+            router.mapNav('Welcome', 'Welcome');
+            router.mapNav('Flickr', 'Flickr');
 
             app.adaptToDevice();
 
             //viewmodels/shell
             //Show the app by setting the root view model for our application with a transition.
-            app.setRoot('Welcome', 'entrance');
+            app.setRoot('Shell', 'entrance');
         });
     });
