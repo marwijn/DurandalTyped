@@ -35,6 +35,6 @@ class Flickr {
     }
 }
 
-
+/// this code should be generated
 Flickr.prototype['__classname__'] = 'Flickr';
 Flickr.prototype['__constructorArguments__'] = ['App', 'Http'];
