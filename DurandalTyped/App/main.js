@@ -4,8 +4,8 @@
     }
 });
 
-define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plugins/router', 'durandal/http'],
-    function(app, viewLocator, system, router, http) {
+define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plugins/router', 'durandal/http', 'durandal/modalDialog'],
+    function(app, viewLocator, system, router, http, modalDialog) {
 
         //>>excludeStart("build", true);
         system.debug(true);
@@ -18,7 +18,15 @@ define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plu
         tioc.Register(Shell);
         tioc.Register(Welcome);
         tioc.Register(Flickr);
-        
+
+        app.showMessage = function(message, title, options) {
+            return modalDialog.show('durandal/messageBox', {
+                message: message,
+                title: title || this.title,
+                options: options
+            });
+        };
+
         system.acquire=function() {
             var modules = Array.prototype.slice.call(arguments, 0);
             return system.defer(function (dfd) {

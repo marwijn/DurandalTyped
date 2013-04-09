@@ -16,7 +16,7 @@ class Shell {
     }
 
     public activate(): any {
-        return this.router.activate('Flickr');
+        return this.router.activate('Welcome');
     }
 }
 

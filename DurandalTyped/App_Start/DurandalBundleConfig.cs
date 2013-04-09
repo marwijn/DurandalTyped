@@ -13,7 +13,7 @@ namespace DurandalTyped {
           .Include("~/Scripts/knockout-{version}.js")
           .Include("~/Scripts/sammy-{version}.js")
           .Include("~/App/viewmodels/*.js")
-          .Include("~/App/durandalts/Durandal.js")
+          .Include("~/App/durandalts/Tioc.js")
           .Include("~/Scripts/bootstrap.min.js")
           );
 

@@ -7,7 +7,7 @@ var Shell = (function () {
         this.app.showMessage('Search not yet implemented...');
     };
     Shell.prototype.activate = function () {
-        return this.router.activate('Flickr');
+        return this.router.activate('Welcome');
     };
     return Shell;
 })();
