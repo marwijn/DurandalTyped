@@ -140,6 +140,10 @@
     <Content Include="App\durandalts\Durandal.js">
       <DependentUpon>Tioc.ts</DependentUpon>
     </Content>
+    <TypeScriptCompile Include="App\durandalts\DurandalTs.ts" />
+    <Content Include="App\durandalts\DurandalTs.js">
+      <DependentUpon>DurandalTs.ts</DependentUpon>
+    </Content>
     <Content Include="App\durandal\amd\almond-custom.js" />
     <Content Include="App\durandal\amd\optimizer.exe" />
     <Content Include="App\durandal\amd\r.js" />

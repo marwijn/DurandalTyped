@@ -12,37 +12,16 @@ define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plu
         //>>excludeEnd("build");
 
         var tioc = new Tioc();
+
+        DurandalTs.setup(system, app, modalDialog, tioc);
+
         tioc.RegisterInstance("App", app);
         tioc.RegisterInstance("Router", router);
         tioc.RegisterInstance("Http", http);
         tioc.Register(Shell);
         tioc.Register(Welcome);
         tioc.Register(Flickr);
-
-        app.showMessage = function(message, title, options) {
-            return modalDialog.show('durandal/messageBox', {
-                message: message,
-                title: title || this.title,
-                options: options
-            });
-        };
-
-        system.acquire=function() {
-            var modules = Array.prototype.slice.call(arguments, 0);
-            return system.defer(function (dfd) {
-                var object = tioc.Resolve(modules[0]);
-                if (object !== null) {
-                    dfd.resolve(object);
-                } else {
-                    require(modules, function () {
-                        var args = arguments;
-                        setTimeout(function () {
-                            dfd.resolve.apply(dfd, args);
-                        }, 1);
-                    });
-                }
-            }).promise();
-        };
+       
         app.title = 'Durandal Starter Kit';
         app.start().then(function () {
 

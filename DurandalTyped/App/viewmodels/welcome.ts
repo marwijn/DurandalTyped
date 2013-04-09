@@ -1,5 +1,3 @@
-///<reference path='../../Scripts/typings/requirejs/require.d.ts'/>
-
 class Welcome {
 
     constructor()
