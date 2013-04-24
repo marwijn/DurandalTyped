@@ -137,9 +137,6 @@
   </ItemGroup>
   <ItemGroup>
     <TypeScriptCompile Include="App\durandalts\Tioc.ts" />
-    <Content Include="App\durandalts\Durandal.js">
-      <DependentUpon>Tioc.ts</DependentUpon>
-    </Content>
     <TypeScriptCompile Include="App\durandalts\DurandalTs.ts" />
     <Content Include="App\durandalts\DurandalTs.js">
       <DependentUpon>DurandalTs.ts</DependentUpon>
@@ -165,8 +162,12 @@
     <Content Include="App\durandal\viewModelBinder.js" />
     <Content Include="App\durandal\widget.js" />
     <Content Include="App\main-built.js" />
-    <Content Include="App\main.js" />
+    <None Include="App\main.xx" />
     <TypeScriptCompile Include="App\viewmodels\flickr.ts" />
+    <TypeScriptCompile Include="App\Startup.ts" />
+    <Content Include="App\Startup.js">
+      <DependentUpon>Startup.ts</DependentUpon>
+    </Content>
     <Content Include="App\viewmodels\flickr.js">
       <DependentUpon>flickr.ts</DependentUpon>
     </Content>

@@ -1,3 +1,4 @@
+///<reference path='../../Scripts/typings/requirejs/require.d.ts'/>
 var DurandalTs = (function () {
     function DurandalTs() { }
     DurandalTs.setup = function setup(system, app, modalDialog, tioc) {
@@ -33,9 +34,12 @@ var DurandalTs = (function () {
         };
     };
     DurandalTs.bindPolyFill = function bindPolyFill() {
+        // Polyfill for Function.bind(). Slightly modified version of
+        // https://developer.mozilla.org/en-US/docs/JavaScript/Reference/Global_Objects/Function/bind#Compatibility
         if(typeof Function.prototype.bind !== "function") {
             Function.prototype.bind = function (oThis) {
                 if(typeof this !== "function") {
+                    // closest thing possible to the ECMAScript 5 internal IsCallable function
                     throw new TypeError("Function.prototype.bind - what is trying to be bound is not callable");
                 }
                 var aArgs = Array.prototype.slice.call(arguments, 1), fToBind = this, fNOP = function () {

@@ -1,14 +1,2854 @@
+var Durandal = function() {
+};
 /**
  * almond 0.2.0 Copyright (c) 2011, The Dojo Foundation All Rights Reserved.
  * Available via the MIT or new BSD license.
  * see: http://github.com/jrburke/almond for details
  */
+//Going sloppy to avoid 'use strict' string cost, but strict practices should
+//be followed.
+/*jslint sloppy: true */
+/*global setTimeout: false */
 
+var requirejs, require, define;
+(function (undef) {
+    var main, req, makeMap, handlers,
+        defined = {},
+        waiting = {},
+        config = {},
+        defining = {},
+        aps = [].slice;
+
+    /**
+     * Given a relative module name, like ./something, normalize it to
+     * a real name that can be mapped to a path.
+     * @param {String} name the relative name
+     * @param {String} baseName a real name that the name arg is relative
+     * to.
+     * @returns {String} normalized name
+     */
+    function normalize(name, baseName) {
+        var nameParts, nameSegment, mapValue, foundMap,
+            foundI, foundStarMap, starI, i, j, part,
+            baseParts = baseName && baseName.split("/"),
+            map = config.map,
+            starMap = (map && map['*']) || {};
+
+        //Adjust any relative paths.
+        if (name && name.charAt(0) === ".") {
+            //If have a base name, try to normalize against it,
+            //otherwise, assume it is a top-level require that will
+            //be relative to baseUrl in the end.
+            if (baseName) {
+                //Convert baseName to array, and lop off the last part,
+                //so that . matches that "directory" and not name of the baseName's
+                //module. For instance, baseName of "one/two/three", maps to
+                //"one/two/three.js", but we want the directory, "one/two" for
+                //this normalization.
+                baseParts = baseParts.slice(0, baseParts.length - 1);
+
+                name = baseParts.concat(name.split("/"));
+
+                //start trimDots
+                for (i = 0; i < name.length; i += 1) {
+                    part = name[i];
+                    if (part === ".") {
+                        name.splice(i, 1);
+                        i -= 1;
+                    } else if (part === "..") {
+                        if (i === 1 && (name[2] === '..' || name[0] === '..')) {
+                            //End of the line. Keep at least one non-dot
+                            //path segment at the front so it can be mapped
+                            //correctly to disk. Otherwise, there is likely
+                            //no path mapping for a path starting with '..'.
+                            //This can still fail, but catches the most reasonable
+                            //uses of ..
+                            break;
+                        } else if (i > 0) {
+                            name.splice(i - 1, 2);
+                            i -= 2;
+                        }
+                    }
+                }
+                //end trimDots
+
+                name = name.join("/");
+            }
+        }
+
+        //Apply map config if available.
+        if ((baseParts || starMap) && map) {
+            nameParts = name.split('/');
+
+            for (i = nameParts.length; i > 0; i -= 1) {
+                nameSegment = nameParts.slice(0, i).join("/");
+
+                if (baseParts) {
+                    //Find the longest baseName segment match in the config.
+                    //So, do joins on the biggest to smallest lengths of baseParts.
+                    for (j = baseParts.length; j > 0; j -= 1) {
+                        mapValue = map[baseParts.slice(0, j).join('/')];
+
+                        //baseName segment has  config, find if it has one for
+                        //this name.
+                        if (mapValue) {
+                            mapValue = mapValue[nameSegment];
+                            if (mapValue) {
+                                //Match, update name to the new value.
+                                foundMap = mapValue;
+                                foundI = i;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (foundMap) {
+                    break;
+                }
+
+                //Check for a star map match, but just hold on to it,
+                //if there is a shorter segment match later in a matching
+                //config, then favor over this star map.
+                if (!foundStarMap && starMap && starMap[nameSegment]) {
+                    foundStarMap = starMap[nameSegment];
+                    starI = i;
+                }
+            }
+
+            if (!foundMap && foundStarMap) {
+                foundMap = foundStarMap;
+                foundI = starI;
+            }
+
+            if (foundMap) {
+                nameParts.splice(0, foundI, foundMap);
+                name = nameParts.join('/');
+            }
+        }
+
+        return name;
+    }
+
+    function makeRequire(relName, forceSync) {
+        return function () {
+            //A version of a require function that passes a moduleName
+            //value for items that may need to
+            //look up paths relative to the moduleName
+            return req.apply(undef, aps.call(arguments, 0).concat([relName, forceSync]));
+        };
+    }
+
+    function makeNormalize(relName) {
+        return function (name) {
+            return normalize(name, relName);
+        };
+    }
+
+    function makeLoad(depName) {
+        return function (value) {
+            defined[depName] = value;
+        };
+    }
+
+    function callDep(name) {
+        if (waiting.hasOwnProperty(name)) {
+            var args = waiting[name];
+            delete waiting[name];
+            defining[name] = true;
+            main.apply(undef, args);
+        }
+
+        if (!defined.hasOwnProperty(name) && !defining.hasOwnProperty(name)) {
+            throw new Error('No ' + name);
+        }
+        return defined[name];
+    }
+
+    //Turns a plugin!resource to [plugin, resource]
+    //with the plugin being undefined if the name
+    //did not have a plugin prefix.
+    function splitPrefix(name) {
+        var prefix,
+            index = name ? name.indexOf('!') : -1;
+        if (index > -1) {
+            prefix = name.substring(0, index);
+            name = name.substring(index + 1, name.length);
+        }
+        return [prefix, name];
+    }
+
+    function onResourceLoad(name, defined, deps) {
+        if (requirejs.onResourceLoad && name) {
+            requirejs.onResourceLoad({ defined: defined }, { id: name }, deps);
+        }
+    }
+
+    /**
+     * Makes a name map, normalizing the name, and using a plugin
+     * for normalization if necessary. Grabs a ref to plugin
+     * too, as an optimization.
+     */
+    makeMap = function (name, relName) {
+        var plugin,
+            parts = splitPrefix(name),
+            prefix = parts[0];
+
+        name = parts[1];
+
+        if (prefix) {
+            prefix = normalize(prefix, relName);
+            plugin = callDep(prefix);
+        }
+
+        //Normalize according
+        if (prefix) {
+            if (plugin && plugin.normalize) {
+                name = plugin.normalize(name, makeNormalize(relName));
+            } else {
+                name = normalize(name, relName);
+            }
+        } else {
+            name = normalize(name, relName);
+            parts = splitPrefix(name);
+            prefix = parts[0];
+            name = parts[1];
+            if (prefix) {
+                plugin = callDep(prefix);
+            }
+        }
+
+        //Using ridiculous property names for space reasons
+        return {
+            f: prefix ? prefix + '!' + name : name, //fullName
+            n: name,
+            pr: prefix,
+            p: plugin
+        };
+    };
+
+    function makeConfig(name) {
+        return function () {
+            return (config && config.config && config.config[name]) || {};
+        };
+    }
+
+    handlers = {
+        require: function (name) {
+            return makeRequire(name);
+        },
+        exports: function (name) {
+            var e = defined[name];
+            if (typeof e !== 'undefined') {
+                return e;
+            } else {
+                return (defined[name] = {});
+            }
+        },
+        module: function (name) {
+            return {
+                id: name,
+                uri: '',
+                exports: defined[name],
+                config: makeConfig(name)
+            };
+        }
+    };
+
+    main = function (name, deps, callback, relName) {
+        var cjsModule, depName, ret, map, i,
+            args = [],
+            usingExports;
+
+        //Use name if no relName
+        relName = relName || name;
+
+        //Call the callback to define the module, if necessary.
+        if (typeof callback === 'function') {
+
+            //Pull out the defined dependencies and pass the ordered
+            //values to the callback.
+            //Default to [require, exports, module] if no deps
+            deps = !deps.length && callback.length ? ['require', 'exports', 'module'] : deps;
+            for (i = 0; i < deps.length; i += 1) {
+                map = makeMap(deps[i], relName);
+                depName = map.f;
+
+                //Fast path CommonJS standard dependencies.
+                if (depName === "require") {
+                    args[i] = handlers.require(name);
+                } else if (depName === "exports") {
+                    //CommonJS module spec 1.1
+                    args[i] = handlers.exports(name);
+                    usingExports = true;
+                } else if (depName === "module") {
+                    //CommonJS module spec 1.1
+                    cjsModule = args[i] = handlers.module(name);
+                } else if (defined.hasOwnProperty(depName) ||
+                           waiting.hasOwnProperty(depName) ||
+                           defining.hasOwnProperty(depName)) {
+                    args[i] = callDep(depName);
+                } else if (map.p) {
+                    map.p.load(map.n, makeRequire(relName, true), makeLoad(depName), {});
+                    args[i] = defined[depName];
+                } else {
+                    throw new Error(name + ' missing ' + depName);
+                }
+            }
+
+            ret = callback.apply(defined[name], args);
+
+            if (name) {
+                //If setting exports via "module" is in play,
+                //favor that over return value and exports. After that,
+                //favor a non-undefined return value over exports use.
+                if (cjsModule && cjsModule.exports !== undef &&
+                        cjsModule.exports !== defined[name]) {
+                    defined[name] = cjsModule.exports;
+                } else if (ret !== undef || !usingExports) {
+                    //Use the return value from the function.
+                    defined[name] = ret;
+                }
+            }
+        } else if (name) {
+            //May just be an object definition for the module. Only
+            //worry about defining if have a module name.
+            defined[name] = callback;
+        }
+
+        onResourceLoad(name, defined, args);
+    };
+
+    requirejs = require = req = function (deps, callback, relName, forceSync, alt) {
+        if (typeof deps === "string") {
+            if (handlers[deps]) {
+                //callback in this case is really relName
+                return handlers[deps](callback);
+            }
+            //Just return the module wanted. In this scenario, the
+            //deps arg is the module name, and second arg (if passed)
+            //is just the relName.
+            //Normalize module name, if it contains . or ..
+            return callDep(makeMap(deps, callback).f);
+        } else if (!deps.splice) {
+            //deps is a config object, not an array.
+            config = deps;
+            if (callback.splice) {
+                //callback is an array, which means it is a dependency list.
+                //Adjust args if there are dependencies
+                deps = callback;
+                callback = relName;
+                relName = null;
+            } else {
+                deps = undef;
+            }
+        }
+
+        //Support require(['a'])
+        callback = callback || function () { };
+
+        //If relName is a function, it is an errback handler,
+        //so remove it.
+        if (typeof relName === 'function') {
+            relName = forceSync;
+            forceSync = alt;
+        }
+
+        //Simulate async callback;
+        if (forceSync) {
+            main(undef, deps, callback, relName);
+        } else {
+            setTimeout(function () {
+                main(undef, deps, callback, relName);
+            }, 15);
+        }
+
+        return req;
+    };
+
+    /**
+     * Just drops the config on the floor, but returns req in case
+     * the config return value is used.
+     */
+    req.config = function (cfg) {
+        config = cfg;
+        return req;
+    };
+
+    define = function (name, deps, callback) {
+
+        //This module may not have dependencies
+        if (!deps.splice) {
+            //deps is not an array, so probably means
+            //an object literal or factory function for
+            //the value. Adjust args.
+            callback = deps;
+            deps = [];
+        }
+
+        waiting[name] = [name, deps, callback];
+    };
+
+    define.amd = {
+        jQuery: true
+    };
+}());
+
+define("durandal/amd/almond-custom", function () { });
+
+define('durandal/system', ['require'], function (require) {
+    var isDebugging = false,
+        nativeKeys = Object.keys,
+        hasOwnProperty = Object.prototype.hasOwnProperty,
+        toString = Object.prototype.toString,
+        system,
+        treatAsIE8 = false;
+
+    //see http://patik.com/blog/complete-cross-browser-console-log/
+    // Tell IE9 to use its built-in console
+    if (Function.prototype.bind && (typeof console === 'object' || typeof console === 'function') && typeof console.log == 'object') {
+        try {
+            ['log', 'info', 'warn', 'error', 'assert', 'dir', 'clear', 'profile', 'profileEnd']
+                .forEach(function (method) {
+                    console[method] = this.call(console[method], console);
+                }, Function.prototype.bind);
+        } catch (ex) {
+            treatAsIE8 = true;
+        }
+    }
+
+    // callback for dojo's loader 
+    // note: if you wish to use Durandal with dojo's AMD loader,
+    // currently you must fork the dojo source with the following
+    // dojo/dojo.js, line 1187, the last line of the finishExec() function: 
+    //  (add) signal("moduleLoaded", [module.result, module.mid]);
+    // an enhancement request has been submitted to dojo to make this
+    // a permanent change. To view the status of this request, visit:
+    // http://bugs.dojotoolkit.org/ticket/16727
+
+    if (require.on) {
+        require.on("moduleLoaded", function (module, mid) {
+            system.setModuleId(module, mid);
+        });
+    }
+
+    // callback for require.js loader
+    if (typeof requirejs !== 'undefined') {
+        requirejs.onResourceLoad = function (context, map, depArray) {
+            system.setModuleId(context.defined[map.id], map.id);
+        };
+    }
+
+    var noop = function () { };
+
+    var log = function () {
+        try {
+            // Modern browsers
+            if (typeof console != 'undefined' && typeof console.log == 'function') {
+                // Opera 11
+                if (window.opera) {
+                    var i = 0;
+                    while (i < arguments.length) {
+                        console.log('Item ' + (i + 1) + ': ' + arguments[i]);
+                        i++;
+                    }
+                }
+                    // All other modern browsers
+                else if ((Array.prototype.slice.call(arguments)).length == 1 && typeof Array.prototype.slice.call(arguments)[0] == 'string') {
+                    console.log((Array.prototype.slice.call(arguments)).toString());
+                } else {
+                    console.log(Array.prototype.slice.call(arguments));
+                }
+            }
+                // IE8
+            else if ((!Function.prototype.bind || treatAsIE8) && typeof console != 'undefined' && typeof console.log == 'object') {
+                Function.prototype.call.call(console.log, console, Array.prototype.slice.call(arguments));
+            }
+
+            // IE7 and lower, and other old browsers
+        } catch (ignore) { }
+    };
+
+    var logError = function (error) {
+        throw error;
+    };
+
+    system = {
+        version: "1.2.0",
+        noop: noop,
+        getModuleId: function (obj) {
+            if (!obj) {
+                return null;
+            }
+
+            if (typeof obj == 'function') {
+                return obj.prototype.__moduleId__;
+            }
+
+            if (typeof obj == 'string') {
+                return null;
+            }
+
+            return obj.__moduleId__;
+        },
+        setModuleId: function (obj, id) {
+            if (!obj) {
+                return;
+            }
+
+            if (typeof obj == 'function') {
+                obj.prototype.__moduleId__ = id;
+                return;
+            }
+
+            if (typeof obj == 'string') {
+                return;
+            }
+
+            obj.__moduleId__ = id;
+        },
+        debug: function (enable) {
+            if (arguments.length == 1) {
+                isDebugging = enable;
+                if (isDebugging) {
+                    this.log = log;
+                    this.error = logError;
+                    this.log('Debug mode enabled.');
+                } else {
+                    this.log('Debug mode disabled.');
+                    this.log = noop;
+                    this.error = noop;
+                }
+            } else {
+                return isDebugging;
+            }
+        },
+        isArray: function (obj) {
+            return toString.call(obj) === '[object Array]';
+        },
+        log: noop,
+        error: noop,
+        defer: function (action) {
+            return $.Deferred(action);
+        },
+        guid: function () {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        },
+        acquire: function () {
+            var modules = Array.prototype.slice.call(arguments, 0);
+            return this.defer(function (dfd) {
+                require(modules, function () {
+                    var args = arguments;
+                    setTimeout(function () {
+                        dfd.resolve.apply(dfd, args);
+                    }, 1);
+                });
+            }).promise();
+        }
+    };
+
+    system.keys = nativeKeys || function (obj) {
+        if (obj !== Object(obj)) {
+            throw new TypeError('Invalid object');
+        }
+
+        var keys = [];
+
+        for (var key in obj) {
+            if (hasOwnProperty.call(obj, key)) {
+                keys[keys.length] = key;
+            }
+        }
+
+        return keys;
+    };
+
+    return system;
+});
+define('durandal/viewEngine', ['./system'], function (system) {
+    var parseMarkupCore;
+
+    if ($.parseHTML) {
+        parseMarkupCore = function (html) {
+            return $.parseHTML(html);
+        };
+    } else {
+        parseMarkupCore = function (html) {
+            return $(html).get();
+        };
+    }
+
+    return {
+        viewExtension: '.html',
+        viewPlugin: 'text',
+        isViewUrl: function (url) {
+            return url.indexOf(this.viewExtension, url.length - this.viewExtension.length) !== -1;
+        },
+        convertViewUrlToViewId: function (url) {
+            return url.substring(0, url.length - this.viewExtension.length);
+        },
+        convertViewIdToRequirePath: function (viewId) {
+            return this.viewPlugin + '!' + viewId + this.viewExtension;
+        },
+        parseMarkup: function (markup) {
+            var allElements = parseMarkupCore(markup);
+            if (allElements.length == 1) {
+                return allElements[0];
+            }
+
+            var withoutCommentsOrEmptyText = [];
+
+            for (var i = 0; i < allElements.length; i++) {
+                var current = allElements[i];
+                if (current.nodeType != 8) {
+                    if (current.nodeType == 3) {
+                        var result = /\S/.test(current.nodeValue);
+                        if (!result) {
+                            continue;
+                        }
+                    }
+
+                    withoutCommentsOrEmptyText.push(current);
+                }
+            }
+
+            if (withoutCommentsOrEmptyText.length > 1) {
+                return $(withoutCommentsOrEmptyText).wrapAll('<div class="durandal-wrapper"></div>').parent().get(0);
+            }
+
+            return withoutCommentsOrEmptyText[0];
+        },
+        createView: function (viewId) {
+            var that = this;
+            var requirePath = this.convertViewIdToRequirePath(viewId);
+
+            return system.defer(function (dfd) {
+                system.acquire(requirePath).then(function (markup) {
+                    var element = that.parseMarkup(markup);
+                    element.setAttribute('data-view', viewId);
+                    dfd.resolve(element);
+                });
+            }).promise();
+        }
+    };
+});
+define('durandal/viewLocator', ['./system', './viewEngine'],
+    function (system, viewEngine) {
+
+        function findInElements(nodes, url) {
+            for (var i = 0; i < nodes.length; i++) {
+                var current = nodes[i];
+                var existingUrl = current.getAttribute('data-view');
+                if (existingUrl == url) {
+                    return current;
+                }
+            }
+        }
+
+        function escape(str) {
+            return (str + '').replace(/([\\\.\+\*\?\[\^\]\$\(\)\{\}\=\!\<\>\|\:])/g, "\\$1");
+        }
+
+        return {
+            useConvention: function (modulesPath, viewsPath, areasPath) {
+                modulesPath = modulesPath || 'viewmodels';
+                viewsPath = viewsPath || 'views';
+                areasPath = areasPath || viewsPath;
+
+                var reg = new RegExp(escape(modulesPath), 'gi');
+
+                this.convertModuleIdToViewId = function (moduleId) {
+                    return moduleId.replace(reg, viewsPath);
+                };
+
+                this.translateViewIdToArea = function (viewId, area) {
+                    if (!area || area == 'partial') {
+                        return areasPath + '/' + viewId;
+                    }
+
+                    return areasPath + '/' + area + '/' + viewId;
+                };
+            },
+            locateViewForObject: function (obj, elementsToSearch) {
+                var view;
+
+                if (obj.getView) {
+                    view = obj.getView();
+                    if (view) {
+                        return this.locateView(view, null, elementsToSearch);
+                    }
+                }
+
+                if (obj.viewUrl) {
+                    return this.locateView(obj.viewUrl, null, elementsToSearch);
+                }
+
+                var id = system.getModuleId(obj);
+                if (id) {
+                    return this.locateView(this.convertModuleIdToViewId(id), null, elementsToSearch);
+                }
+
+                return this.locateView(this.determineFallbackViewId(obj), null, elementsToSearch);
+            },
+            convertModuleIdToViewId: function (moduleId) {
+                return moduleId;
+            },
+            determineFallbackViewId: function (obj) {
+                var funcNameRegex = /function (.{1,})\(/;
+                var results = (funcNameRegex).exec((obj).constructor.toString());
+                var typeName = (results && results.length > 1) ? results[1] : "";
+
+                return 'views/' + typeName;
+            },
+            translateViewIdToArea: function (viewId, area) {
+                return viewId;
+            },
+            locateView: function (viewOrUrlOrId, area, elementsToSearch) {
+                if (typeof viewOrUrlOrId === 'string') {
+                    var viewId;
+
+                    if (viewEngine.isViewUrl(viewOrUrlOrId)) {
+                        viewId = viewEngine.convertViewUrlToViewId(viewOrUrlOrId);
+                    } else {
+                        viewId = viewOrUrlOrId;
+                    }
+
+                    if (area) {
+                        viewId = this.translateViewIdToArea(viewId, area);
+                    }
+
+                    if (elementsToSearch) {
+                        var existing = findInElements(elementsToSearch, viewId);
+                        if (existing) {
+                            return system.defer(function (dfd) {
+                                dfd.resolve(existing);
+                            }).promise();
+                        }
+                    }
+
+                    return viewEngine.createView(viewId);
+                }
+
+                return system.defer(function (dfd) {
+                    dfd.resolve(viewOrUrlOrId);
+                }).promise();
+            }
+        };
+    });
+define('durandal/viewModelBinder', ['./system'], function (system) {
+    var viewModelBinder;
+    var insufficientInfoMessage = 'Insufficient Information to Bind';
+    var unexpectedViewMessage = 'Unexpected View Type';
+
+    function doBind(obj, view, action) {
+        if (!view || !obj) {
+            if (viewModelBinder.throwOnErrors) {
+                system.error(new Error(insufficientInfoMessage));
+            } else {
+                system.log(insufficientInfoMessage, view, obj);
+            }
+            return;
+        }
+
+        if (!view.getAttribute) {
+            if (viewModelBinder.throwOnErrors) {
+                system.error(new Error(unexpectedViewMessage));
+            } else {
+                system.log(unexpectedViewMessage, view, obj);
+            }
+            return;
+        }
+
+        var viewName = view.getAttribute('data-view');
+
+        try {
+            system.log('Binding', viewName, obj);
+
+            viewModelBinder.beforeBind(obj, view);
+            action();
+            viewModelBinder.afterBind(obj, view);
+        } catch (e) {
+            if (viewModelBinder.throwOnErrors) {
+                system.error(new Error(e.message + ';\nView: ' + viewName + ";\nModuleId: " + system.getModuleId(obj)));
+            } else {
+                system.log(e.message, viewName, obj);
+            }
+        }
+    }
+
+    return viewModelBinder = {
+        beforeBind: system.noop,
+        afterBind: system.noop,
+        bindContext: function (bindingContext, view, obj) {
+            if (obj) {
+                bindingContext = bindingContext.createChildContext(obj);
+            }
+
+            doBind(bindingContext, view, function () {
+                if (obj && obj.beforeBind) {
+                    obj.beforeBind(view);
+                }
+
+                ko.applyBindings(bindingContext, view);
+
+                if (obj && obj.afterBind) {
+                    obj.afterBind(view);
+                }
+            });
+        },
+        bind: function (obj, view) {
+            doBind(obj, view, function () {
+                if (obj.beforeBind) {
+                    obj.beforeBind(view);
+                }
+
+                ko.applyBindings(obj, view);
+
+                if (obj.afterBind) {
+                    obj.afterBind(view);
+                }
+            });
+        }
+    };
+});
+define('durandal/viewModel', ['./system'], function (system) {
+    var viewModel;
+
+    function ensureSettings(settings) {
+        if (settings == undefined) {
+            settings = {};
+        }
+
+        if (!settings.closeOnDeactivate) {
+            settings.closeOnDeactivate = viewModel.defaults.closeOnDeactivate;
+        }
+
+        if (!settings.beforeActivate) {
+            settings.beforeActivate = viewModel.defaults.beforeActivate;
+        }
+
+        if (!settings.afterDeactivate) {
+            settings.afterDeactivate = viewModel.defaults.afterDeactivate;
+        }
+
+        if (!settings.interpretResponse) {
+            settings.interpretResponse = viewModel.defaults.interpretResponse;
+        }
+
+        if (!settings.areSameItem) {
+            settings.areSameItem = viewModel.defaults.areSameItem;
+        }
+
+        return settings;
+    }
+
+    function deactivate(item, close, settings, dfd, setter) {
+        if (item && item.deactivate) {
+            system.log('Deactivating', item);
+
+            var result;
+            try {
+                result = item.deactivate(close);
+            } catch (error) {
+                system.error(error);
+                dfd.resolve(false);
+                return;
+            }
+
+            if (result && result.then) {
+                result.then(function () {
+                    settings.afterDeactivate(item, close, setter);
+                    dfd.resolve(true);
+                }, function (reason) {
+                    system.log(reason);
+                    dfd.resolve(false);
+                });
+            } else {
+                settings.afterDeactivate(item, close, setter);
+                dfd.resolve(true);
+            }
+        } else {
+            if (item) {
+                settings.afterDeactivate(item, close, setter);
+            }
+
+            dfd.resolve(true);
+        }
+    }
+
+    function activate(newItem, activeItem, callback, activationData) {
+        if (newItem) {
+            if (newItem.activate) {
+                system.log('Activating', newItem);
+
+                var result;
+                try {
+                    result = newItem.activate(activationData);
+                } catch (error) {
+                    system.error(error);
+                    callback(false);
+                    return;
+                }
+
+                if (result && result.then) {
+                    result.then(function () {
+                        activeItem(newItem);
+                        callback(true);
+                    }, function (reason) {
+                        system.log(reason);
+                        callback(false);
+                    });
+                } else {
+                    activeItem(newItem);
+                    callback(true);
+                }
+            } else {
+                activeItem(newItem);
+                callback(true);
+            }
+        } else {
+            callback(true);
+        }
+    }
+
+    function canDeactivateItem(item, close, settings) {
+        return system.defer(function (dfd) {
+            if (item && item.canDeactivate) {
+                var resultOrPromise;
+                try {
+                    resultOrPromise = item.canDeactivate(close);
+                } catch (error) {
+                    system.error(error);
+                    dfd.resolve(false);
+                    return;
+                }
+
+                if (resultOrPromise.then) {
+                    resultOrPromise.then(function (result) {
+                        dfd.resolve(settings.interpretResponse(result));
+                    }, function (reason) {
+                        system.log(reason);
+                        dfd.resolve(false);
+                    });
+                } else {
+                    dfd.resolve(settings.interpretResponse(resultOrPromise));
+                }
+            } else {
+                dfd.resolve(true);
+            }
+        }).promise();
+    };
+
+    function canActivateItem(newItem, activeItem, settings, activationData) {
+        return system.defer(function (dfd) {
+            if (newItem == activeItem()) {
+                dfd.resolve(true);
+                return;
+            }
+
+            if (newItem && newItem.canActivate) {
+                var resultOrPromise;
+                try {
+                    resultOrPromise = newItem.canActivate(activationData);
+                } catch (error) {
+                    system.error(error);
+                    dfd.resolve(false);
+                    return;
+                }
+
+                if (resultOrPromise.then) {
+                    resultOrPromise.then(function (result) {
+                        dfd.resolve(settings.interpretResponse(result));
+                    }, function (reason) {
+                        system.log(reason);
+                        dfd.resolve(false);
+                    });
+                } else {
+                    dfd.resolve(settings.interpretResponse(resultOrPromise));
+                }
+            } else {
+                dfd.resolve(true);
+            }
+        }).promise();
+    };
+
+    function createActivator(initialActiveItem, settings) {
+        var activeItem = ko.observable(null);
+
+        settings = ensureSettings(settings);
+
+        var computed = ko.computed({
+            read: function () {
+                return activeItem();
+            },
+            write: function (newValue) {
+                computed.viaSetter = true;
+                computed.activateItem(newValue);
+            }
+        });
+
+        computed.settings = settings;
+        settings.activator = computed;
+
+        computed.isActivating = ko.observable(false);
+
+        computed.canDeactivateItem = function (item, close) {
+            return canDeactivateItem(item, close, settings);
+        };
+
+        computed.deactivateItem = function (item, close) {
+            return system.defer(function (dfd) {
+                computed.canDeactivateItem(item, close).then(function (canDeactivate) {
+                    if (canDeactivate) {
+                        deactivate(item, close, settings, dfd, activeItem);
+                    } else {
+                        computed.notifySubscribers();
+                        dfd.resolve(false);
+                    }
+                });
+            }).promise();
+        };
+
+        computed.canActivateItem = function (newItem, activationData) {
+            return canActivateItem(newItem, activeItem, settings, activationData);
+        };
+
+        computed.activateItem = function (newItem, activationData) {
+            var viaSetter = computed.viaSetter;
+            computed.viaSetter = false;
+
+            return system.defer(function (dfd) {
+                if (computed.isActivating()) {
+                    dfd.resolve(false);
+                    return;
+                }
+
+                computed.isActivating(true);
+
+                var currentItem = activeItem();
+                if (settings.areSameItem(currentItem, newItem, activationData)) {
+                    computed.isActivating(false);
+                    dfd.resolve(true);
+                    return;
+                }
+
+                computed.canDeactivateItem(currentItem, settings.closeOnDeactivate).then(function (canDeactivate) {
+                    if (canDeactivate) {
+                        computed.canActivateItem(newItem, activationData).then(function (canActivate) {
+                            if (canActivate) {
+                                system.defer(function (dfd2) {
+                                    deactivate(currentItem, settings.closeOnDeactivate, settings, dfd2);
+                                }).promise().then(function () {
+                                    newItem = settings.beforeActivate(newItem, activationData);
+                                    activate(newItem, activeItem, function (result) {
+                                        computed.isActivating(false);
+                                        dfd.resolve(result);
+                                    }, activationData);
+                                });
+                            } else {
+                                if (viaSetter) {
+                                    computed.notifySubscribers();
+                                }
+
+                                computed.isActivating(false);
+                                dfd.resolve(false);
+                            }
+                        });
+                    } else {
+                        if (viaSetter) {
+                            computed.notifySubscribers();
+                        }
+
+                        computed.isActivating(false);
+                        dfd.resolve(false);
+                    }
+                });
+            }).promise();
+        };
+
+        computed.canActivate = function () {
+            var toCheck;
+
+            if (initialActiveItem) {
+                toCheck = initialActiveItem;
+                initialActiveItem = false;
+            } else {
+                toCheck = computed();
+            }
+
+            return computed.canActivateItem(toCheck);
+        };
+
+        computed.activate = function () {
+            var toActivate;
+
+            if (initialActiveItem) {
+                toActivate = initialActiveItem;
+                initialActiveItem = false;
+            } else {
+                toActivate = computed();
+            }
+
+            return computed.activateItem(toActivate);
+        };
+
+        computed.canDeactivate = function (close) {
+            return computed.canDeactivateItem(computed(), close);
+        };
+
+        computed.deactivate = function (close) {
+            return computed.deactivateItem(computed(), close);
+        };
+
+        computed.includeIn = function (includeIn) {
+            includeIn.canActivate = function () {
+                return computed.canActivate();
+            };
+
+            includeIn.activate = function () {
+                return computed.activate();
+            };
+
+            includeIn.canDeactivate = function (close) {
+                return computed.canDeactivate(close);
+            };
+
+            includeIn.deactivate = function (close) {
+                return computed.deactivate(close);
+            };
+        };
+
+        if (settings.includeIn) {
+            computed.includeIn(settings.includeIn);
+        } else if (initialActiveItem) {
+            computed.activate();
+        }
+
+        computed.forItems = function (items) {
+            settings.closeOnDeactivate = false;
+
+            settings.determineNextItemToActivate = function (list, lastIndex) {
+                var toRemoveAt = lastIndex - 1;
+
+                if (toRemoveAt == -1 && list.length > 1) {
+                    return list[1];
+                }
+
+                if (toRemoveAt > -1 && toRemoveAt < list.length - 1) {
+                    return list[toRemoveAt];
+                }
+
+                return null;
+            };
+
+            settings.beforeActivate = function (newItem) {
+                var currentItem = computed();
+
+                if (!newItem) {
+                    newItem = settings.determineNextItemToActivate(items, currentItem ? items.indexOf(currentItem) : 0);
+                } else {
+                    var index = items.indexOf(newItem);
+
+                    if (index == -1) {
+                        items.push(newItem);
+                    } else {
+                        newItem = items()[index];
+                    }
+                }
+
+                return newItem;
+            };
+
+            settings.afterDeactivate = function (oldItem, close) {
+                if (close) {
+                    items.remove(oldItem);
+                }
+            };
+
+            var originalCanDeactivate = computed.canDeactivate;
+            computed.canDeactivate = function (close) {
+                if (close) {
+                    return system.defer(function (dfd) {
+                        var list = items();
+                        var results = [];
+
+                        function finish() {
+                            for (var j = 0; j < results.length; j++) {
+                                if (!results[j]) {
+                                    dfd.resolve(false);
+                                    return;
+                                }
+                            }
+
+                            dfd.resolve(true);
+                        }
+
+                        for (var i = 0; i < list.length; i++) {
+                            computed.canDeactivateItem(list[i], close).then(function (result) {
+                                results.push(result);
+                                if (results.length == list.length) {
+                                    finish();
+                                }
+                            });
+                        }
+                    }).promise();
+                } else {
+                    return originalCanDeactivate();
+                }
+            };
+
+            var originalDeactivate = computed.deactivate;
+            computed.deactivate = function (close) {
+                if (close) {
+                    return system.defer(function (dfd) {
+                        var list = items();
+                        var results = 0;
+                        var listLength = list.length;
+
+                        function doDeactivate(item) {
+                            computed.deactivateItem(item, close).then(function () {
+                                results++;
+                                items.remove(item);
+                                if (results == listLength) {
+                                    dfd.resolve();
+                                }
+                            });
+                        }
+
+                        for (var i = 0; i < listLength; i++) {
+                            doDeactivate(list[i]);
+                        }
+                    }).promise();
+                } else {
+                    return originalDeactivate();
+                }
+            };
+
+            return computed;
+        };
+
+        return computed;
+    }
+
+    return viewModel = {
+        defaults: {
+            closeOnDeactivate: true,
+            interpretResponse: function (value) {
+                if (typeof value == 'string') {
+                    var lowered = value.toLowerCase();
+                    return lowered == 'yes' || lowered == 'ok';
+                }
+
+                return value;
+            },
+            areSameItem: function (currentItem, newItem, activationData) {
+                return currentItem == newItem;
+            },
+            beforeActivate: function (newItem) {
+                return newItem;
+            },
+            afterDeactivate: function (item, close, setter) {
+                if (close && setter) {
+                    setter(null);
+                }
+            }
+        },
+        activator: createActivator
+    };
+});
+define('durandal/composition', ['./viewLocator', './viewModelBinder', './viewEngine', './system', './viewModel'],
+    function (viewLocator, viewModelBinder, viewEngine, system, viewModel) {
+
+        var dummyModel = {},
+            activeViewAttributeName = 'data-active-view';
+
+        function shouldPerformActivation(settings) {
+            return settings.model && settings.model.activate
+                && ((composition.activateDuringComposition && settings.activate == undefined) || settings.activate);
+        }
+
+        function tryActivate(settings, successCallback) {
+            if (shouldPerformActivation(settings)) {
+                viewModel.activator().activateItem(settings.model).then(function (success) {
+                    if (success) {
+                        successCallback();
+                    }
+                });
+            } else {
+                successCallback();
+            }
+        }
+
+        function getHostState(parent) {
+            var elements = [];
+            var state = {
+                childElements: elements,
+                activeView: null
+            };
+
+            var child = ko.virtualElements.firstChild(parent);
+
+            while (child) {
+                if (child.nodeType == 1) {
+                    elements.push(child);
+                    if (child.getAttribute(activeViewAttributeName)) {
+                        state.activeView = child;
+                    }
+                }
+
+                child = ko.virtualElements.nextSibling(child);
+            }
+
+            return state;
+        }
+
+        function afterContentSwitch(parent, newChild, settings) {
+            if (settings.activeView) {
+                settings.activeView.removeAttribute(activeViewAttributeName);
+            }
+
+            if (newChild) {
+                if (settings.model && settings.model.viewAttached) {
+                    if (settings.composingNewView || settings.alwaysAttachView) {
+                        settings.model.viewAttached(newChild);
+                    }
+                }
+
+                newChild.setAttribute(activeViewAttributeName, true);
+            }
+
+            if (settings.afterCompose) {
+                settings.afterCompose(parent, newChild, settings);
+            }
+        }
+
+        function shouldTransition(newChild, settings) {
+            if (typeof settings.transition == 'string') {
+                if (settings.activeView) {
+                    if (settings.activeView == newChild) {
+                        return false;
+                    }
+
+                    if (!newChild) {
+                        return true;
+                    }
+
+                    if (settings.skipTransitionOnSameViewId) {
+                        var currentViewId = settings.activeView.getAttribute('data-view');
+                        var newViewId = newChild.getAttribute('data-view');
+                        return currentViewId != newViewId;
+                    }
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        var composition = {
+            activateDuringComposition: false,
+            convertTransitionToModuleId: function (name) {
+                return 'durandal/transitions/' + name;
+            },
+            switchContent: function (parent, newChild, settings) {
+                settings.transition = settings.transition || this.defaultTransitionName;
+
+                if (shouldTransition(newChild, settings)) {
+                    var transitionModuleId = this.convertTransitionToModuleId(settings.transition);
+                    system.acquire(transitionModuleId).then(function (transition) {
+                        settings.transition = transition;
+                        transition(parent, newChild, settings).then(function () {
+                            afterContentSwitch(parent, newChild, settings);
+                        });
+                    });
+                } else {
+                    if (newChild != settings.activeView) {
+                        if (settings.cacheViews && settings.activeView) {
+                            $(settings.activeView).css('display', 'none');
+                        }
+
+                        if (!newChild) {
+                            if (!settings.cacheViews) {
+                                ko.virtualElements.emptyNode(parent);
+                            }
+                        } else {
+                            if (settings.cacheViews) {
+                                if (settings.composingNewView) {
+                                    settings.viewElements.push(newChild);
+                                    ko.virtualElements.prepend(parent, newChild);
+                                } else {
+                                    $(newChild).css('display', '');
+                                }
+                            } else {
+                                ko.virtualElements.emptyNode(parent);
+                                ko.virtualElements.prepend(parent, newChild);
+                            }
+                        }
+                    }
+
+                    afterContentSwitch(parent, newChild, settings);
+                }
+            },
+            bindAndShow: function (element, view, settings) {
+                if (settings.cacheViews) {
+                    settings.composingNewView = (ko.utils.arrayIndexOf(settings.viewElements, view) == -1);
+                } else {
+                    settings.composingNewView = true;
+                }
+
+                tryActivate(settings, function () {
+                    if (settings.beforeBind) {
+                        settings.beforeBind(element, view, settings);
+                    }
+
+                    if (settings.preserveContext && settings.bindingContext) {
+                        if (settings.composingNewView) {
+                            viewModelBinder.bindContext(settings.bindingContext, view, settings.model);
+                        }
+                    } else if (view) {
+                        var modelToBind = settings.model || dummyModel;
+                        var currentModel = ko.dataFor(view);
+
+                        if (currentModel != modelToBind) {
+                            if (!settings.composingNewView) {
+                                $(view).remove();
+                                viewEngine.createView(view.getAttribute('data-view')).then(function (recreatedView) {
+                                    composition.bindAndShow(element, recreatedView, settings);
+                                });
+                                return;
+                            }
+                            viewModelBinder.bind(modelToBind, view);
+                        }
+                    }
+
+                    composition.switchContent(element, view, settings);
+                });
+            },
+            defaultStrategy: function (settings) {
+                return viewLocator.locateViewForObject(settings.model, settings.viewElements);
+            },
+            getSettings: function (valueAccessor, element) {
+                var value = ko.utils.unwrapObservable(valueAccessor()) || {};
+
+                if (typeof value == 'string') {
+                    return value;
+                }
+
+                var moduleId = system.getModuleId(value);
+                if (moduleId) {
+                    return {
+                        model: value
+                    };
+                }
+
+                for (var attrName in value) {
+                    value[attrName] = ko.utils.unwrapObservable(value[attrName]);
+                }
+
+                return value;
+            },
+            executeStrategy: function (element, settings) {
+                settings.strategy(settings).then(function (view) {
+                    composition.bindAndShow(element, view, settings);
+                });
+            },
+            inject: function (element, settings) {
+                if (!settings.model) {
+                    this.bindAndShow(element, null, settings);
+                    return;
+                }
+
+                if (settings.view) {
+                    viewLocator.locateView(settings.view, settings.area, settings.viewElements).then(function (view) {
+                        composition.bindAndShow(element, view, settings);
+                    });
+                    return;
+                }
+
+                if (settings.view !== undefined && !settings.view) {
+                    return;
+                }
+
+                if (!settings.strategy) {
+                    settings.strategy = this.defaultStrategy;
+                }
+
+                if (typeof settings.strategy == 'string') {
+                    system.acquire(settings.strategy).then(function (strategy) {
+                        settings.strategy = strategy;
+                        composition.executeStrategy(element, settings);
+                    });
+                } else {
+                    this.executeStrategy(element, settings);
+                }
+            },
+            compose: function (element, settings, bindingContext) {
+                if (typeof settings == 'string') {
+                    if (viewEngine.isViewUrl(settings)) {
+                        settings = {
+                            view: settings
+                        };
+                    } else {
+                        settings = {
+                            model: settings
+                        };
+                    }
+                }
+
+                var moduleId = system.getModuleId(settings);
+                if (moduleId) {
+                    settings = {
+                        model: settings
+                    };
+                }
+
+                var hostState = getHostState(element);
+
+                settings.bindingContext = bindingContext;
+                settings.activeView = hostState.activeView;
+
+                if (settings.cacheViews && !settings.viewElements) {
+                    settings.viewElements = hostState.childElements;
+                }
+
+                if (!settings.model) {
+                    if (!settings.view) {
+                        this.bindAndShow(element, null, settings);
+                    } else {
+                        settings.area = settings.area || 'partial';
+                        settings.preserveContext = true;
+
+                        viewLocator.locateView(settings.view, settings.area, settings.viewElements).then(function (view) {
+                            composition.bindAndShow(element, view, settings);
+                        });
+                    }
+                } else if (typeof settings.model == 'string') {
+                    system.acquire(settings.model).then(function (module) {
+                        if (typeof (module) == 'function') {
+                            settings.model = new module(element, settings);
+                        } else {
+                            settings.model = module;
+                        }
+
+                        composition.inject(element, settings);
+                    });
+                } else {
+                    composition.inject(element, settings);
+                }
+            }
+        };
+
+        ko.bindingHandlers.compose = {
+            update: function (element, valueAccessor, allBindingsAccessor, viewModel, bindingContext) {
+                var settings = composition.getSettings(valueAccessor);
+                composition.compose(element, settings, bindingContext);
+            }
+        };
+
+        ko.virtualElements.allowedBindings.compose = true;
+
+        return composition;
+    });
+define('durandal/widget', ['./system', './composition'], function (system, composition) {
+
+    var widgetPartAttribute = 'data-part',
+        widgetPartSelector = '[' + widgetPartAttribute + ']';
+
+    var kindModuleMaps = {},
+        kindViewMaps = {},
+        bindableSettings = ['model', 'view', 'kind'];
+
+    var widget = {
+        getParts: function (elements) {
+            var parts = {};
+
+            if (!system.isArray(elements)) {
+                elements = [elements];
+            }
+
+            for (var i = 0; i < elements.length; i++) {
+                var element = elements[i];
+
+                if (element.getAttribute) {
+                    var id = element.getAttribute(widgetPartAttribute);
+                    if (id) {
+                        parts[id] = element;
+                    }
+
+                    var childParts = $(widgetPartSelector, element);
+
+                    for (var j = 0; j < childParts.length; j++) {
+                        var part = childParts.get(j);
+                        parts[part.getAttribute(widgetPartAttribute)] = part;
+                    }
+                }
+            }
+
+            return parts;
+        },
+        getSettings: function (valueAccessor) {
+            var value = ko.utils.unwrapObservable(valueAccessor()) || {};
+
+            if (typeof value == 'string') {
+                return value;
+            } else {
+                for (var attrName in value) {
+                    if (ko.utils.arrayIndexOf(bindableSettings, attrName) != -1) {
+                        value[attrName] = ko.utils.unwrapObservable(value[attrName]);
+                    } else {
+                        value[attrName] = value[attrName];
+                    }
+                }
+            }
+
+            return value;
+        },
+        registerKind: function (kind) {
+            ko.bindingHandlers[kind] = {
+                init: function () {
+                    return { controlsDescendantBindings: true };
+                },
+                update: function (element, valueAccessor, allBindingsAccessor, viewModel, bindingContext) {
+                    var settings = widget.getSettings(valueAccessor);
+                    settings.kind = kind;
+                    widget.create(element, settings, bindingContext);
+                }
+            };
+
+            ko.virtualElements.allowedBindings[kind] = true;
+        },
+        mapKind: function (kind, viewId, moduleId) {
+            if (viewId) {
+                kindViewMaps[kind] = viewId;
+            }
+
+            if (moduleId) {
+                kindModuleMaps[kind] = moduleId;
+            }
+        },
+        convertKindToModuleId: function (kind) {
+            return kindModuleMaps[kind] || 'durandal/widgets/' + kind + '/controller';
+        },
+        convertKindToViewId: function (kind) {
+            return kindViewMaps[kind] || 'durandal/widgets/' + kind + '/view';
+        },
+        beforeBind: function (element, view, settings) {
+            var replacementParts = widget.getParts(element);
+            var standardParts = widget.getParts(view);
+
+            for (var partId in replacementParts) {
+                $(standardParts[partId]).replaceWith(replacementParts[partId]);
+            }
+        },
+        createCompositionSettings: function (settings) {
+            if (!settings.model) {
+                settings.model = this.convertKindToModuleId(settings.kind);
+            }
+
+            if (!settings.view) {
+                settings.view = this.convertKindToViewId(settings.kind);
+            }
+
+            settings.preserveContext = true;
+            settings.beforeBind = this.beforeBind;
+
+            return settings;
+        },
+        create: function (element, settings, bindingContext) {
+            if (typeof settings == 'string') {
+                settings = {
+                    kind: settings
+                };
+            }
+
+            var compositionSettings = widget.createCompositionSettings(settings);
+            composition.compose(element, compositionSettings, bindingContext);
+        }
+    };
+
+    ko.bindingHandlers.widget = {
+        init: function () {
+            return { controlsDescendantBindings: true };
+        },
+        update: function (element, valueAccessor, allBindingsAccessor, viewModel, bindingContext) {
+            var settings = widget.getSettings(valueAccessor);
+            widget.create(element, settings, bindingContext);
+        }
+    };
+
+    ko.virtualElements.allowedBindings.widget = true;
+
+    return widget;
+});
+define('durandal/modalDialog', ['./composition', './system', './viewModel'],
+    function (composition, system, viewModel) {
+
+        var contexts = {},
+            modalCount = 0;
+
+        function ensureModalInstance(objOrModuleId) {
+            return system.defer(function (dfd) {
+                if (typeof objOrModuleId == "string") {
+                    system.acquire(objOrModuleId).then(function (module) {
+                        if (typeof (module) == 'function') {
+                            dfd.resolve(new module());
+                        } else {
+                            dfd.resolve(module);
+                        }
+                    });
+                } else {
+                    dfd.resolve(objOrModuleId);
+                }
+            }).promise();
+        }
+
+        var modalDialog = {
+            currentZIndex: 1050,
+            getNextZIndex: function () {
+                return ++this.currentZIndex;
+            },
+            isModalOpen: function () {
+                return modalCount > 0;
+            },
+            getContext: function (name) {
+                return contexts[name || 'default'];
+            },
+            addContext: function (name, modalContext) {
+                modalContext.name = name;
+                contexts[name] = modalContext;
+
+                var helperName = 'show' + name.substr(0, 1).toUpperCase() + name.substr(1);
+                this[helperName] = function (obj, activationData) {
+                    return this.show(obj, activationData, name);
+                };
+            },
+            createCompositionSettings: function (obj, modalContext) {
+                var settings = {
+                    model: obj,
+                    activate: false
+                };
+
+                if (modalContext.afterCompose) {
+                    settings.afterCompose = modalContext.afterCompose;
+                }
+
+                return settings;
+            },
+            show: function (obj, activationData, context) {
+                var that = this;
+                var modalContext = contexts[context || 'default'];
+
+                return system.defer(function (dfd) {
+                    ensureModalInstance(obj).then(function (instance) {
+                        var activator = viewModel.activator();
+
+                        activator.activateItem(instance, activationData).then(function (success) {
+                            if (success) {
+                                var modal = instance.modal = {
+                                    owner: instance,
+                                    context: modalContext,
+                                    activator: activator,
+                                    close: function () {
+                                        var args = arguments;
+                                        activator.deactivateItem(instance, true).then(function (closeSuccess) {
+                                            if (closeSuccess) {
+                                                modalCount--;
+                                                modalContext.removeHost(modal);
+                                                delete instance.modal;
+                                                dfd.resolve.apply(dfd, args);
+                                            }
+                                        });
+                                    }
+                                };
+
+                                modal.settings = that.createCompositionSettings(instance, modalContext);
+                                modalContext.addHost(modal);
+
+                                modalCount++;
+                                composition.compose(modal.host, modal.settings);
+                            } else {
+                                dfd.resolve(false);
+                            }
+                        });
+                    });
+                }).promise();
+            }
+        };
+
+        modalDialog.addContext('default', {
+            blockoutOpacity: .2,
+            removeDelay: 200,
+            addHost: function (modal) {
+                var body = $('body');
+                var blockout = $('<div class="modalBlockout"></div>')
+                    .css({ 'z-index': modalDialog.getNextZIndex(), 'opacity': this.blockoutOpacity })
+                    .appendTo(body);
+
+                var host = $('<div class="modalHost"></div>')
+                    .css({ 'z-index': modalDialog.getNextZIndex() })
+                    .appendTo(body);
+
+                modal.host = host.get(0);
+                modal.blockout = blockout.get(0);
+
+                if (!modalDialog.isModalOpen()) {
+                    modal.oldBodyMarginRight = $("body").css("margin-right");
+
+                    var html = $("html");
+                    var oldBodyOuterWidth = body.outerWidth(true);
+                    var oldScrollTop = html.scrollTop();
+                    $("html").css("overflow-y", "hidden");
+                    var newBodyOuterWidth = $("body").outerWidth(true);
+                    body.css("margin-right", (newBodyOuterWidth - oldBodyOuterWidth + parseInt(modal.oldBodyMarginRight)) + "px");
+                    html.scrollTop(oldScrollTop); // necessary for Firefox
+                    $("#simplemodal-overlay").css("width", newBodyOuterWidth + "px");
+                }
+            },
+            removeHost: function (modal) {
+                $(modal.host).css('opacity', 0);
+                $(modal.blockout).css('opacity', 0);
+
+                setTimeout(function () {
+                    $(modal.host).remove();
+                    $(modal.blockout).remove();
+                }, this.removeDelay);
+
+                if (!modalDialog.isModalOpen()) {
+                    var html = $("html");
+                    var oldScrollTop = html.scrollTop(); // necessary for Firefox.
+                    html.css("overflow-y", "").scrollTop(oldScrollTop);
+                    $("body").css("margin-right", modal.oldBodyMarginRight);
+                }
+            },
+            afterCompose: function (parent, newChild, settings) {
+                var $child = $(newChild);
+                var width = $child.width();
+                var height = $child.height();
+
+                $child.css({
+                    'margin-top': (-height / 2).toString() + 'px',
+                    'margin-left': (-width / 2).toString() + 'px'
+                });
+
+                $(settings.model.modal.host).css('opacity', 1);
+
+                if ($(newChild).hasClass('autoclose')) {
+                    $(settings.model.modal.blockout).click(function () {
+                        settings.model.modal.close();
+                    });
+                }
+
+                $('.autofocus', newChild).each(function () {
+                    $(this).focus();
+                });
+            }
+        });
+
+        return modalDialog;
+    });
+//heavily borrowed from backbone events, augmented by signals.js, added a little of my own code, cleaned up for better readability
+define('durandal/events', ['./system'], function (system) {
+    var eventSplitter = /\s+/;
+    var Events = function () { };
+
+    var Subscription = function (owner, events) {
+        this.owner = owner;
+        this.events = events;
+    };
+
+    Subscription.prototype.then = function (callback, context) {
+        this.callback = callback || this.callback;
+        this.context = context || this.context;
+
+        if (!this.callback) {
+            return this;
+        }
+
+        this.owner.on(this.events, this.callback, this.context);
+        return this;
+    };
+
+    Subscription.prototype.on = Subscription.prototype.then;
+
+    Subscription.prototype.off = function () {
+        this.owner.off(this.events, this.callback, this.context);
+        return this;
+    };
+
+    Events.prototype.on = function (events, callback, context) {
+        var calls, event, list;
+
+        if (!callback) {
+            return new Subscription(this, events);
+        } else {
+            calls = this.callbacks || (this.callbacks = {});
+            events = events.split(eventSplitter);
+
+            while (event = events.shift()) {
+                list = calls[event] || (calls[event] = []);
+                list.push(callback, context);
+            }
+
+            return this;
+        }
+    };
+
+    Events.prototype.off = function (events, callback, context) {
+        var event, calls, list, i;
+
+        // No events
+        if (!(calls = this.callbacks)) {
+            return this;
+        }
+
+        //removing all
+        if (!(events || callback || context)) {
+            delete this.callbacks;
+            return this;
+        }
+
+        events = events ? events.split(eventSplitter) : system.keys(calls);
+
+        // Loop through the callback list, splicing where appropriate.
+        while (event = events.shift()) {
+            if (!(list = calls[event]) || !(callback || context)) {
+                delete calls[event];
+                continue;
+            }
+
+            for (i = list.length - 2; i >= 0; i -= 2) {
+                if (!(callback && list[i] !== callback || context && list[i + 1] !== context)) {
+                    list.splice(i, 2);
+                }
+            }
+        }
+
+        return this;
+    };
+
+    Events.prototype.trigger = function (events) {
+        var event, calls, list, i, length, args, all, rest;
+        if (!(calls = this.callbacks)) {
+            return this;
+        }
+
+        rest = [];
+        events = events.split(eventSplitter);
+        for (i = 1, length = arguments.length; i < length; i++) {
+            rest[i - 1] = arguments[i];
+        }
+
+        // For each event, walk through the list of callbacks twice, first to
+        // trigger the event, then to trigger any `"all"` callbacks.
+        while (event = events.shift()) {
+            // Copy callback lists to prevent modification.
+            if (all = calls.all) {
+                all = all.slice();
+            }
+
+            if (list = calls[event]) {
+                list = list.slice();
+            }
+
+            // Execute event callbacks.
+            if (list) {
+                for (i = 0, length = list.length; i < length; i += 2) {
+                    list[i].apply(list[i + 1] || this, rest);
+                }
+            }
+
+            // Execute "all" callbacks.
+            if (all) {
+                args = [event].concat(rest);
+                for (i = 0, length = all.length; i < length; i += 2) {
+                    all[i].apply(all[i + 1] || this, args);
+                }
+            }
+        }
+
+        return this;
+    };
+
+    Events.prototype.proxy = function (events) {
+        var that = this;
+        return (function (arg) {
+            that.trigger(events, arg);
+        });
+    };
+
+    Events.includeIn = function (targetObject) {
+        targetObject.on = Events.prototype.on;
+        targetObject.off = Events.prototype.off;
+        targetObject.trigger = Events.prototype.trigger;
+        targetObject.proxy = Events.prototype.proxy;
+    };
+
+    return Events;
+});
+define('durandal/app', ['./system', './viewEngine', './composition', './widget', './modalDialog', './events'],
+    function (system, viewEngine, composition, widget, modalDialog, Events) {
+
+        var app = {
+            title: 'Application',
+            showModal: function (obj, activationData, context) {
+                return modalDialog.show(obj, activationData, context);
+            },
+            showMessage: function (message, title, options) {
+                return modalDialog.show('./messageBox', {
+                    message: message,
+                    title: title || this.title,
+                    options: options
+                });
+            },
+            start: function () {
+                var that = this;
+                if (that.title) {
+                    document.title = that.title;
+                }
+
+                return system.defer(function (dfd) {
+                    $(function () {
+                        system.log('Starting Application');
+                        dfd.resolve();
+                        system.log('Started Application');
+                    });
+                }).promise();
+            },
+            setRoot: function (root, transition, applicationHost) {
+                var hostElement, settings = { activate: true, transition: transition };
+
+                if (!applicationHost || typeof applicationHost == "string") {
+                    hostElement = document.getElementById(applicationHost || 'applicationHost');
+                } else {
+                    hostElement = applicationHost;
+                }
+
+                if (typeof root === 'string') {
+                    if (viewEngine.isViewUrl(root)) {
+                        settings.view = root;
+                    } else {
+                        settings.model = root;
+                    }
+                } else {
+                    settings.model = root;
+                }
+
+                composition.compose(hostElement, settings);
+            },
+            adaptToDevice: function () {
+                document.ontouchmove = function (event) {
+                    event.preventDefault();
+                };
+            }
+        };
+
+        Events.includeIn(app);
+
+        return app;
+    });
+define('durandal/http', [], function () {
+    return {
+        defaultJSONPCallbackParam: 'callback',
+        get: function (url, query) {
+            return $.ajax(url, { data: query });
+        },
+        jsonp: function (url, query, callbackParam) {
+            if (url.indexOf('=?') == -1) {
+                callbackParam = callbackParam || this.defaultJSONPCallbackParam;
+
+                if (url.indexOf('?') == -1) {
+                    url += '?';
+                } else {
+                    url += '&';
+                }
+
+                url += callbackParam + '=?';
+            }
+
+            return $.ajax({
+                url: url,
+                dataType: 'jsonp',
+                data: query
+            });
+        },
+        post: function (url, data) {
+            return $.ajax({
+                url: url,
+                data: ko.toJSON(data),
+                type: 'POST',
+                contentType: 'application/json',
+                dataType: 'json'
+            });
+        }
+    };
+});
 /**
  * @license RequireJS text 2.0.3 Copyright (c) 2010-2012, The Dojo Foundation All Rights Reserved.
  * Available via the MIT or new BSD license.
  * see: http://github.com/requirejs/text for details
  */
+/*jslint regexp: true */
+/*global require: false, XMLHttpRequest: false, ActiveXObject: false,
+  define: false, window: false, process: false, Packages: false,
+  java: false, location: false */
 
-(function(){var e,t,n;(function(i){function o(e,t){var n,i,o,r,a,s,c,u,l,d,f=t&&t.split("/"),v=w.map,p=v&&v["*"]||{};if(e&&"."===e.charAt(0)&&t){for(f=f.slice(0,f.length-1),e=f.concat(e.split("/")),u=0;e.length>u;u+=1)if(d=e[u],"."===d)e.splice(u,1),u-=1;else if(".."===d){if(1===u&&(".."===e[2]||".."===e[0]))break;u>0&&(e.splice(u-1,2),u-=2)}e=e.join("/")}if((f||p)&&v){for(n=e.split("/"),u=n.length;u>0;u-=1){if(i=n.slice(0,u).join("/"),f)for(l=f.length;l>0;l-=1)if(o=v[f.slice(0,l).join("/")],o&&(o=o[i])){r=o,a=u;break}if(r)break;!s&&p&&p[i]&&(s=p[i],c=u)}!r&&s&&(r=s,a=c),r&&(n.splice(0,a,r),e=n.join("/"))}return e}function r(e,t){return function(){return v.apply(i,b.call(arguments,0).concat([e,t]))}}function a(e){return function(t){return o(t,e)}}function s(e){return function(t){h[e]=t}}function c(e){if(g.hasOwnProperty(e)){var t=g[e];delete g[e],y[e]=!0,f.apply(i,t)}if(!h.hasOwnProperty(e)&&!y.hasOwnProperty(e))throw Error("No "+e);return h[e]}function u(e){var t,n=e?e.indexOf("!"):-1;return n>-1&&(t=e.substring(0,n),e=e.substring(n+1,e.length)),[t,e]}function l(t,n,i){e.onResourceLoad&&t&&e.onResourceLoad({defined:n},{id:t},i)}function d(e){return function(){return w&&w.config&&w.config[e]||{}}}var f,v,p,m,h={},g={},w={},y={},b=[].slice;p=function(e,t){var n,i=u(e),r=i[0];return e=i[1],r&&(r=o(r,t),n=c(r)),r?e=n&&n.normalize?n.normalize(e,a(t)):o(e,t):(e=o(e,t),i=u(e),r=i[0],e=i[1],r&&(n=c(r))),{f:r?r+"!"+e:e,n:e,pr:r,p:n}},m={require:function(e){return r(e)},exports:function(e){var t=h[e];return t!==void 0?t:h[e]={}},module:function(e){return{id:e,uri:"",exports:h[e],config:d(e)}}},f=function(e,t,n,o){var a,u,d,f,v,w,b=[];if(o=o||e,"function"==typeof n){for(t=!t.length&&n.length?["require","exports","module"]:t,v=0;t.length>v;v+=1)if(f=p(t[v],o),u=f.f,"require"===u)b[v]=m.require(e);else if("exports"===u)b[v]=m.exports(e),w=!0;else if("module"===u)a=b[v]=m.module(e);else if(h.hasOwnProperty(u)||g.hasOwnProperty(u)||y.hasOwnProperty(u))b[v]=c(u);else{if(!f.p)throw Error(e+" missing "+u);f.p.load(f.n,r(o,!0),s(u),{}),b[v]=h[u]}d=n.apply(h[e],b),e&&(a&&a.exports!==i&&a.exports!==h[e]?h[e]=a.exports:d===i&&w||(h[e]=d))}else e&&(h[e]=n);l(e,h,b)},e=t=v=function(e,t,n,o,r){return"string"==typeof e?m[e]?m[e](t):c(p(e,t).f):(e.splice||(w=e,t.splice?(e=t,t=n,n=null):e=i),t=t||function(){},"function"==typeof n&&(n=o,o=r),o?f(i,e,t,n):setTimeout(function(){f(i,e,t,n)},15),v)},v.config=function(e){return w=e,v},n=function(e,t,n){t.splice||(n=t,t=[]),g[e]=[e,t,n]},n.amd={jQuery:!0}})(),n("durandal/amd/almond-custom",function(){}),n("main-built",function(){}),n("durandal/system",["require"],function(t){var n,i=!1,o=Object.keys,r=Object.prototype.hasOwnProperty,a=Object.prototype.toString,s=!1;if(Function.prototype.bind&&("object"==typeof console||"function"==typeof console)&&"object"==typeof console.log)try{["log","info","warn","error","assert","dir","clear","profile","profileEnd"].forEach(function(e){console[e]=this.call(console[e],console)},Function.prototype.bind)}catch(c){s=!0}t.on&&t.on("moduleLoaded",function(e,t){n.setModuleId(e,t)}),e!==void 0&&(e.onResourceLoad=function(e,t){n.setModuleId(e.defined[t.id],t.id)});var u=function(){},l=function(){try{if("undefined"!=typeof console&&"function"==typeof console.log)if(window.opera)for(var e=0;arguments.length>e;)console.log("Item "+(e+1)+": "+arguments[e]),e++;else 1==Array.prototype.slice.call(arguments).length&&"string"==typeof Array.prototype.slice.call(arguments)[0]?console.log(""+Array.prototype.slice.call(arguments)):console.log(Array.prototype.slice.call(arguments));else Function.prototype.bind&&!s||"undefined"==typeof console||"object"!=typeof console.log||Function.prototype.call.call(console.log,console,Array.prototype.slice.call(arguments))}catch(t){}};return n={version:"1.2.0",noop:u,getModuleId:function(e){return e?"function"==typeof e?e.prototype.__moduleId__:"string"==typeof e?null:e.__moduleId__:null},setModuleId:function(e,t){return e?"function"==typeof e?(e.prototype.__moduleId__=t,void 0):("string"!=typeof e&&(e.__moduleId__=t),void 0):void 0},debug:function(e){return 1!=arguments.length?i:(i=e,i?(this.log=l,this.log("Debug mode enabled.")):(this.log("Debug mode disabled."),this.log=u),void 0)},isArray:function(e){return"[object Array]"===a.call(e)},log:u,defer:function(e){return $.Deferred(e)},guid:function(){return"xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,function(e){var t=0|16*Math.random(),n="x"==e?t:8|3&t;return n.toString(16)})},acquire:function(){var e=Array.prototype.slice.call(arguments,0);return this.defer(function(n){t(e,function(){var e=arguments;setTimeout(function(){n.resolve.apply(n,e)},1)})}).promise()}},n.keys=o||function(e){if(e!==Object(e))throw new TypeError("Invalid object");var t=[];for(var n in e)r.call(e,n)&&(t[t.length]=n);return t},n}),n("durandal/viewEngine",["./system"],function(e){var t;return t=$.parseHTML?function(e){return $.parseHTML(e)}:function(e){return $(e).get()},{viewExtension:".html",viewPlugin:"text",isViewUrl:function(e){return-1!==e.indexOf(this.viewExtension,e.length-this.viewExtension.length)},convertViewUrlToViewId:function(e){return e.substring(0,e.length-this.viewExtension.length)},convertViewIdToRequirePath:function(e){return this.viewPlugin+"!"+e+this.viewExtension},parseMarkup:function(e){var n=t(e);if(1==n.length)return n[0];for(var i=[],o=0;n.length>o;o++){var r=n[o];if(8!=r.nodeType){if(3==r.nodeType){var a=/\S/.test(r.nodeValue);if(!a)continue}i.push(r)}}return i.length>1?$(i).wrapAll('<div class="durandal-wrapper"></div>').parent().get(0):i[0]},createView:function(t){var n=this,i=this.convertViewIdToRequirePath(t);return e.defer(function(o){e.acquire(i).then(function(e){var i=n.parseMarkup(e);i.setAttribute("data-view",t),o.resolve(i)})}).promise()}}}),n("durandal/viewLocator",["./system","./viewEngine"],function(e,t){function n(e,t){for(var n=0;e.length>n;n++){var i=e[n],o=i.getAttribute("data-view");if(o==t)return i}}function i(e){return(e+"").replace(/([\\\.\+\*\?\[\^\]\$\(\)\{\}\=\!\<\>\|\:])/g,"\\$1")}return{useConvention:function(e,t,n){e=e||"viewmodels",t=t||"views",n=n||t;var o=RegExp(i(e),"gi");this.convertModuleIdToViewId=function(e){return e.replace(o,t)},this.translateViewIdToArea=function(e,t){return t&&"partial"!=t?n+"/"+t+"/"+e:n+"/"+e}},locateViewForObject:function(t,n){var i;if(t.getView&&(i=t.getView()))return this.locateView(i,null,n);if(t.viewUrl)return this.locateView(t.viewUrl,null,n);var o=e.getModuleId(t);return o?this.locateView(this.convertModuleIdToViewId(o),null,n):this.locateView(this.determineFallbackViewId(t),null,n)},convertModuleIdToViewId:function(e){return e},determineFallbackViewId:function(e){var t=/function (.{1,})\(/,n=t.exec(""+e.constructor),i=n&&n.length>1?n[1]:"";return"views/"+i},translateViewIdToArea:function(e){return e},locateView:function(i,o,r){if("string"==typeof i){var a;if(a=t.isViewUrl(i)?t.convertViewUrlToViewId(i):i,o&&(a=this.translateViewIdToArea(a,o)),r){var s=n(r,a);if(s)return e.defer(function(e){e.resolve(s)}).promise()}return t.createView(a)}return e.defer(function(e){e.resolve(i)}).promise()}}}),n("durandal/viewModelBinder",["./system"],function(e){function t(t,r,a){if(!r||!t){if(n.throwOnErrors)throw Error(i);return e.log(i,r,t),void 0}if(!r.getAttribute){if(n.throwOnErrors)throw Error(o);return e.log(o,r,t),void 0}var s=r.getAttribute("data-view");try{e.log("Binding",s,t),n.beforeBind(t,r),a(),n.afterBind(t,r)}catch(c){if(n.throwOnErrors)throw Error(c.message+";\nView: "+s+";\nModuleId: "+e.getModuleId(t));e.log(c.message,s,t)}}var n,i="Insufficient Information to Bind",o="Unexpected View Type";return n={beforeBind:e.noop,afterBind:e.noop,bindContext:function(e,n,i){i&&(e=e.createChildContext(i)),t(e,n,function(){i&&i.beforeBind&&i.beforeBind(n),ko.applyBindings(e,n),i&&i.afterBind&&i.afterBind(n)})},bind:function(e,n){t(e,n,function(){e.beforeBind&&e.beforeBind(n),ko.applyBindings(e,n),e.afterBind&&e.afterBind(n)})}}}),n("durandal/viewModel",["./system"],function(e){function t(e){return void 0==e&&(e={}),e.closeOnDeactivate||(e.closeOnDeactivate=s.defaults.closeOnDeactivate),e.beforeActivate||(e.beforeActivate=s.defaults.beforeActivate),e.afterDeactivate||(e.afterDeactivate=s.defaults.afterDeactivate),e.interpretResponse||(e.interpretResponse=s.defaults.interpretResponse),e.areSameItem||(e.areSameItem=s.defaults.areSameItem),e}function n(t,n,i,o,r){if(t&&t.deactivate){e.log("Deactivating",t);var a;try{a=t.deactivate(n)}catch(s){return e.log(s),o.resolve(!1),void 0}a&&a.then?a.then(function(){i.afterDeactivate(t,n,r),o.resolve(!0)},function(t){e.log(t),o.resolve(!1)}):(i.afterDeactivate(t,n,r),o.resolve(!0))}else t&&i.afterDeactivate(t,n,r),o.resolve(!0)}function i(t,n,i,o){if(t)if(t.activate){e.log("Activating",t);var r;try{r=t.activate(o)}catch(a){return e.log(a),i(!1),void 0}r&&r.then?r.then(function(){n(t),i(!0)},function(t){e.log(t),i(!1)}):(n(t),i(!0))}else n(t),i(!0);else i(!0)}function o(t,n,i){return e.defer(function(o){if(t&&t.canDeactivate){var r;try{r=t.canDeactivate(n)}catch(a){return e.log(a),o.resolve(!1),void 0}r.then?r.then(function(e){o.resolve(i.interpretResponse(e))},function(t){e.log(t),o.resolve(!1)}):o.resolve(i.interpretResponse(r))}else o.resolve(!0)}).promise()}function r(t,n,i,o){return e.defer(function(r){if(t==n())return r.resolve(!0),void 0;if(t&&t.canActivate){var a;try{a=t.canActivate(o)}catch(s){return e.log(s),r.resolve(!1),void 0}a.then?a.then(function(e){r.resolve(i.interpretResponse(e))},function(t){e.log(t),r.resolve(!1)}):r.resolve(i.interpretResponse(a))}else r.resolve(!0)}).promise()}function a(a,s){var c=ko.observable(null);s=t(s);var u=ko.computed({read:function(){return c()},write:function(e){u.viaSetter=!0,u.activateItem(e)}});return u.settings=s,s.activator=u,u.isActivating=ko.observable(!1),u.canDeactivateItem=function(e,t){return o(e,t,s)},u.deactivateItem=function(t,i){return e.defer(function(e){u.canDeactivateItem(t,i).then(function(o){o?n(t,i,s,e,c):(u.notifySubscribers(),e.resolve(!1))})}).promise()},u.canActivateItem=function(e,t){return r(e,c,s,t)},u.activateItem=function(t,o){var r=u.viaSetter;return u.viaSetter=!1,e.defer(function(a){if(u.isActivating())return a.resolve(!1),void 0;u.isActivating(!0);var l=c();return s.areSameItem(l,t,o)?(u.isActivating(!1),a.resolve(!0),void 0):(u.canDeactivateItem(l,s.closeOnDeactivate).then(function(d){d?u.canActivateItem(t,o).then(function(d){d?e.defer(function(e){n(l,s.closeOnDeactivate,s,e)}).promise().then(function(){t=s.beforeActivate(t,o),i(t,c,function(e){u.isActivating(!1),a.resolve(e)},o)}):(r&&u.notifySubscribers(),u.isActivating(!1),a.resolve(!1))}):(r&&u.notifySubscribers(),u.isActivating(!1),a.resolve(!1))}),void 0)}).promise()},u.canActivate=function(){var e;return a?(e=a,a=!1):e=u(),u.canActivateItem(e)},u.activate=function(){var e;return a?(e=a,a=!1):e=u(),u.activateItem(e)},u.canDeactivate=function(e){return u.canDeactivateItem(u(),e)},u.deactivate=function(e){return u.deactivateItem(u(),e)},u.includeIn=function(e){e.canActivate=function(){return u.canActivate()},e.activate=function(){return u.activate()},e.canDeactivate=function(e){return u.canDeactivate(e)},e.deactivate=function(e){return u.deactivate(e)}},s.includeIn?u.includeIn(s.includeIn):a&&u.activate(),u.forItems=function(t){s.closeOnDeactivate=!1,s.determineNextItemToActivate=function(e,t){var n=t-1;return-1==n&&e.length>1?e[1]:n>-1&&e.length-1>n?e[n]:null},s.beforeActivate=function(e){var n=u();if(e){var i=t.indexOf(e);-1==i?t.push(e):e=t()[i]}else e=s.determineNextItemToActivate(t,n?t.indexOf(n):0);return e},s.afterDeactivate=function(e,n){n&&t.remove(e)};var n=u.canDeactivate;u.canDeactivate=function(i){return i?e.defer(function(e){function n(){for(var t=0;r.length>t;t++)if(!r[t])return e.resolve(!1),void 0;e.resolve(!0)}for(var o=t(),r=[],a=0;o.length>a;a++)u.canDeactivateItem(o[a],i).then(function(e){r.push(e),r.length==o.length&&n()})}).promise():n()};var i=u.deactivate;return u.deactivate=function(n){return n?e.defer(function(e){function i(i){u.deactivateItem(i,n).then(function(){r++,t.remove(i),r==a&&e.resolve()})}for(var o=t(),r=0,a=o.length,s=0;a>s;s++)i(o[s])}).promise():i()},u},u}var s;return s={defaults:{closeOnDeactivate:!0,interpretResponse:function(e){if("string"==typeof e){var t=e.toLowerCase();return"yes"==t||"ok"==t}return e},areSameItem:function(e,t){return e==t},beforeActivate:function(e){return e},afterDeactivate:function(e,t,n){t&&n&&n(null)}},activator:a}}),n("durandal/composition",["./viewLocator","./viewModelBinder","./viewEngine","./system","./viewModel"],function(e,t,n,i,o){function r(e){return e.model&&e.model.activate&&(f.activateDuringComposition&&void 0==e.activate||e.activate)}function a(e,t){r(e)?o.activator().activateItem(e.model).then(function(e){e&&t()}):t()}function s(e){for(var t=[],n={childElements:t,activeView:null},i=ko.virtualElements.firstChild(e);i;)1==i.nodeType&&(t.push(i),i.getAttribute(d)&&(n.activeView=i)),i=ko.virtualElements.nextSibling(i);return n}function c(e,t,n){n.activeView&&n.activeView.removeAttribute(d),t&&(n.model&&n.model.viewAttached&&(n.composingNewView||n.alwaysAttachView)&&n.model.viewAttached(t),t.setAttribute(d,!0)),n.afterCompose&&n.afterCompose(e,t,n)}function u(e,t){if("string"==typeof t.transition){if(t.activeView){if(t.activeView==e)return!1;if(!e)return!0;if(t.skipTransitionOnSameViewId){var n=t.activeView.getAttribute("data-view"),i=e.getAttribute("data-view");return n!=i}}return!0}return!1}var l={},d="data-active-view",f={activateDuringComposition:!1,convertTransitionToModuleId:function(e){return"durandal/transitions/"+e},switchContent:function(e,t,n){if(n.transition=n.transition||this.defaultTransitionName,u(t,n)){var o=this.convertTransitionToModuleId(n.transition);i.acquire(o).then(function(i){n.transition=i,i(e,t,n).then(function(){c(e,t,n)})})}else t!=n.activeView&&(n.cacheViews&&n.activeView&&$(n.activeView).css("display","none"),t?n.cacheViews?n.composingNewView?(n.viewElements.push(t),ko.virtualElements.prepend(e,t)):$(t).css("display",""):(ko.virtualElements.emptyNode(e),ko.virtualElements.prepend(e,t)):n.cacheViews||ko.virtualElements.emptyNode(e)),c(e,t,n)},bindAndShow:function(e,i,o){o.composingNewView=o.cacheViews?-1==ko.utils.arrayIndexOf(o.viewElements,i):!0,a(o,function(){if(o.beforeBind&&o.beforeBind(e,i,o),o.preserveContext&&o.bindingContext)o.composingNewView&&t.bindContext(o.bindingContext,i,o.model);else if(i){var r=o.model||l,a=ko.dataFor(i);if(a!=r){if(!o.composingNewView)return $(i).remove(),n.createView(i.getAttribute("data-view")).then(function(t){f.bindAndShow(e,t,o)}),void 0;t.bind(r,i)}}f.switchContent(e,i,o)})},defaultStrategy:function(t){return e.locateViewForObject(t.model,t.viewElements)},getSettings:function(e){var t=ko.utils.unwrapObservable(e())||{};if("string"==typeof t)return t;var n=i.getModuleId(t);if(n)return{model:t};for(var o in t)t[o]=ko.utils.unwrapObservable(t[o]);return t},executeStrategy:function(e,t){t.strategy(t).then(function(n){f.bindAndShow(e,n,t)})},inject:function(t,n){return n.model?n.view?(e.locateView(n.view,n.area,n.viewElements).then(function(e){f.bindAndShow(t,e,n)}),void 0):((void 0===n.view||n.view)&&(n.strategy||(n.strategy=this.defaultStrategy),"string"==typeof n.strategy?i.acquire(n.strategy).then(function(e){n.strategy=e,f.executeStrategy(t,n)}):this.executeStrategy(t,n)),void 0):(this.bindAndShow(t,null,n),void 0)},compose:function(t,o,r){"string"==typeof o&&(o=n.isViewUrl(o)?{view:o}:{model:o});var a=i.getModuleId(o);a&&(o={model:o});var c=s(t);o.bindingContext=r,o.activeView=c.activeView,o.cacheViews&&!o.viewElements&&(o.viewElements=c.childElements),o.model?"string"==typeof o.model?i.acquire(o.model).then(function(e){o.model="function"==typeof e?new e(t,o):e,f.inject(t,o)}):f.inject(t,o):o.view?(o.area=o.area||"partial",o.preserveContext=!0,e.locateView(o.view,o.area,o.viewElements).then(function(e){f.bindAndShow(t,e,o)})):this.bindAndShow(t,null,o)}};return ko.bindingHandlers.compose={update:function(e,t,n,i,o){var r=f.getSettings(t);f.compose(e,r,o)}},ko.virtualElements.allowedBindings.compose=!0,f}),n("durandal/widget",["./system","./composition"],function(e,t){var n="data-part",i="["+n+"]",o={},r={},a=["model","view","kind"],s={getParts:function(t){var o={};e.isArray(t)||(t=[t]);for(var r=0;t.length>r;r++){var a=t[r];if(a.getAttribute){var s=a.getAttribute(n);s&&(o[s]=a);for(var c=$(i,a),u=0;c.length>u;u++){var l=c.get(u);o[l.getAttribute(n)]=l}}}return o},getSettings:function(e){var t=ko.utils.unwrapObservable(e())||{};if("string"==typeof t)return t;for(var n in t)t[n]=-1!=ko.utils.arrayIndexOf(a,n)?ko.utils.unwrapObservable(t[n]):t[n];return t},registerKind:function(e){ko.bindingHandlers[e]={init:function(){return{controlsDescendantBindings:!0}},update:function(t,n,i,o,r){var a=s.getSettings(n);a.kind=e,s.create(t,a,r)}},ko.virtualElements.allowedBindings[e]=!0},mapKind:function(e,t,n){t&&(r[e]=t),n&&(o[e]=n)},convertKindToModuleId:function(e){return o[e]||"durandal/widgets/"+e+"/controller"},convertKindToViewId:function(e){return r[e]||"durandal/widgets/"+e+"/view"},beforeBind:function(e,t){var n=s.getParts(e),i=s.getParts(t);for(var o in n)$(i[o]).replaceWith(n[o])},createCompositionSettings:function(e){return e.model||(e.model=this.convertKindToModuleId(e.kind)),e.view||(e.view=this.convertKindToViewId(e.kind)),e.preserveContext=!0,e.beforeBind=this.beforeBind,e},create:function(e,n,i){"string"==typeof n&&(n={kind:n});var o=s.createCompositionSettings(n);t.compose(e,o,i)}};return ko.bindingHandlers.widget={init:function(){return{controlsDescendantBindings:!0}},update:function(e,t,n,i,o){var r=s.getSettings(t);s.create(e,r,o)}},ko.virtualElements.allowedBindings.widget=!0,s}),n("durandal/modalDialog",["./composition","./system","./viewModel"],function(e,t,n){function i(e){return t.defer(function(n){"string"==typeof e?t.acquire(e).then(function(e){"function"==typeof e?n.resolve(new e):n.resolve(e)}):n.resolve(e)}).promise()}var o={},r=0,a={currentZIndex:1050,getNextZIndex:function(){return++this.currentZIndex},isModalOpen:function(){return r>0},getContext:function(e){return o[e||"default"]},addContext:function(e,t){t.name=e,o[e]=t;var n="show"+e.substr(0,1).toUpperCase()+e.substr(1);this[n]=function(t,n){return this.show(t,n,e)}},createCompositionSettings:function(e,t){var n={model:e,activate:!1};return t.afterCompose&&(n.afterCompose=t.afterCompose),n},show:function(a,s,c){var u=this,l=o[c||"default"];return t.defer(function(t){i(a).then(function(i){var o=n.activator();o.activateItem(i,s).then(function(n){if(n){var a=i.modal={owner:i,context:l,activator:o,close:function(){var e=arguments;o.deactivateItem(i,!0).then(function(n){n&&(r--,l.removeHost(a),delete i.modal,t.resolve.apply(t,e))})}};a.settings=u.createCompositionSettings(i,l),l.addHost(a),r++,e.compose(a.host,a.settings)}else t.resolve(!1)})})}).promise()}};return a.addContext("default",{blockoutOpacity:.2,removeDelay:200,addHost:function(e){var t=$("body"),n=$('<div class="modalBlockout"></div>').css({"z-index":a.getNextZIndex(),opacity:this.blockoutOpacity}).appendTo(t),i=$('<div class="modalHost"></div>').css({"z-index":a.getNextZIndex()}).appendTo(t);if(e.host=i.get(0),e.blockout=n.get(0),!a.isModalOpen()){e.oldBodyMarginRight=$("body").css("margin-right");var o=$("html"),r=t.outerWidth(!0),s=o.scrollTop();$("html").css("overflow-y","hidden");var c=$("body").outerWidth(!0);t.css("margin-right",c-r+parseInt(e.oldBodyMarginRight)+"px"),o.scrollTop(s),$("#simplemodal-overlay").css("width",c+"px")}},removeHost:function(e){if($(e.host).css("opacity",0),$(e.blockout).css("opacity",0),setTimeout(function(){$(e.host).remove(),$(e.blockout).remove()},this.removeDelay),!a.isModalOpen()){var t=$("html"),n=t.scrollTop();t.css("overflow-y","").scrollTop(n),$("body").css("margin-right",e.oldBodyMarginRight)}},afterCompose:function(e,t,n){var i=$(t),o=i.width(),r=i.height();i.css({"margin-top":""+-r/2+"px","margin-left":""+-o/2+"px"}),$(n.model.modal.host).css("opacity",1),$(t).hasClass("autoclose")&&$(n.model.modal.blockout).click(function(){n.model.modal.close()}),$(".autofocus",t).each(function(){$(this).focus()})}}),a}),n("durandal/events",["./system"],function(e){var t=/\s+/,n=function(){},i=function(e,t){this.owner=e,this.events=t};return i.prototype.then=function(e,t){return this.callback=e||this.callback,this.context=t||this.context,this.callback?(this.owner.on(this.events,this.callback,this.context),this):this},i.prototype.on=i.prototype.then,i.prototype.off=function(){return this.owner.off(this.events,this.callback,this.context),this},n.prototype.on=function(e,n,o){var r,a,s;if(n){for(r=this.callbacks||(this.callbacks={}),e=e.split(t);a=e.shift();)s=r[a]||(r[a]=[]),s.push(n,o);return this}return new i(this,e)},n.prototype.off=function(n,i,o){var r,a,s,c;if(!(a=this.callbacks))return this;if(!(n||i||o))return delete this.callbacks,this;for(n=n?n.split(t):e.keys(a);r=n.shift();)if((s=a[r])&&(i||o))for(c=s.length-2;c>=0;c-=2)i&&s[c]!==i||o&&s[c+1]!==o||s.splice(c,2);else delete a[r];return this},n.prototype.trigger=function(e){var n,i,o,r,a,s,c,u;if(!(i=this.callbacks))return this;for(u=[],e=e.split(t),r=1,a=arguments.length;a>r;r++)u[r-1]=arguments[r];for(;n=e.shift();){if((c=i.all)&&(c=c.slice()),(o=i[n])&&(o=o.slice()),o)for(r=0,a=o.length;a>r;r+=2)o[r].apply(o[r+1]||this,u);if(c)for(s=[n].concat(u),r=0,a=c.length;a>r;r+=2)c[r].apply(c[r+1]||this,s)}return this},n.prototype.proxy=function(e){var t=this;return function(n){t.trigger(e,n)}},n.includeIn=function(e){e.on=n.prototype.on,e.off=n.prototype.off,e.trigger=n.prototype.trigger,e.proxy=n.prototype.proxy},n}),n("durandal/app",["./system","./viewEngine","./composition","./widget","./modalDialog","./events"],function(e,t,n,i,o,r){var a={title:"Application",showModal:function(e,t,n){return o.show(e,t,n)},showMessage:function(e,t,n){return o.show("./messageBox",{message:e,title:t||this.title,options:n})},start:function(){var t=this;return t.title&&(document.title=t.title),e.defer(function(t){$(function(){e.log("Starting Application"),t.resolve(),e.log("Started Application")})}).promise()},setRoot:function(e,i,o){var r,a={activate:!0,transition:i};r=o&&"string"!=typeof o?o:document.getElementById(o||"applicationHost"),"string"==typeof e?t.isViewUrl(e)?a.view=e:a.model=e:a.model=e,n.compose(r,a)},adaptToDevice:function(){document.ontouchmove=function(e){e.preventDefault()}}};return r.includeIn(a),a}),n("durandal/plugins/router",["../system","../viewModel","../app"],function(e,t,n){function i(t){V(!1),e.log("Redirecting"),g.navigateTo(t)}function o(){S=!0,e.log("Cancelling Navigation"),w&&h.setLocation(w),S=!1,V(!1);var t=h.last_location[1].split("#/")[1];w||!t?C():t!=b?window.location.replace("#/"+b):C()}function r(e,t,n){R(e),g.onNavigationComplete(e,t,n),y=n,w=h.last_location[1].replace("/",""),C()}function a(t,n,i){e.log("Activating Route",t,i,n),M.activateItem(i,n).then(function(e){e?r(t,n,i):o()})}function s(){return S||h.last_location[1].replace("/","")==w}function c(e,t,n){var r=g.guardRoute(e,t,n);r?r.then?r.then(function(r){r?"string"==typeof r?i(r):a(e,t,n):o()}):"string"==typeof r?i(r):a(e,t,n):o()}function u(){if(!V()){var t=O.shift();O=[],t&&(V(!0),e.acquire(t.routeInfo.moduleId).then(function(e){t.params.routeInfo=t.routeInfo,t.params.router=g;var n=g.getActivatableInstance(t.routeInfo,t.params,e);g.guardRoute?c(t.routeInfo,t.params,n):a(t.routeInfo,t.params,n)}))}}function l(e,t){O.unshift({routeInfo:e,params:t}),u()}function d(e,t){var n=I[e];if(!s()){if(!n){if(!g.autoConvertRouteToModuleId)return g.handleInvalidRoute(e,t),void 0;n={moduleId:g.autoConvertRouteToModuleId(e,t),name:g.convertRouteToName(e)}}l(n,t)}}function f(){d(b,this.params||{})}function v(){d(""+this.app.last_route.path,this.params||{})}function p(){var e,t=this.params||{};if(g.autoConvertRouteToModuleId){var n=this.path.split("#/");if(2==n.length){var i=n[1].split("/");return e=i[0],t.splat=i.splice(1),d(e,t),void 0}}g.handleInvalidRoute(this.app.last_location[1],t)}function m(e){return g.prepareRouteInfo(e),I[""+e.url]=e,k.push(e),e.visible&&(e.isActive=ko.computed(function(){return T()&&M()&&M().__moduleId__==e.moduleId}),A.push(e)),e}var h,g,w,y,b,x,I={},k=ko.observableArray([]),A=ko.observableArray([]),T=ko.observable(!1),V=ko.observable(!1),S=!1,M=t.activator(),R=ko.observable(),O=[],C=function(){C=e.noop,T(!0),g.dfd.resolve(),delete g.dfd};return M.settings.areSameItem=function(){return!1},g={ready:T,allRoutes:k,visibleRoutes:A,isNavigating:V,activeItem:M,activeRoute:R,afterCompose:function(){setTimeout(function(){V(!1),u()},10)},getActivatableInstance:function(e,t,n){return"function"==typeof n?new n:n},useConvention:function(e){e=null==e?"viewmodels":e,e&&(e+="/"),g.convertRouteToModuleId=function(t){return e+g.stripParameter(t)}},stripParameter:function(e){var t=e.indexOf(":"),n=t>0?t-1:e.length;return e.substring(0,n)},handleInvalidRoute:function(t,n){e.log("No Route Found",t,n)},onNavigationComplete:function(e){document.title=n.title?e.caption+" | "+n.title:e.caption},navigateBack:function(){window.history.back()},navigateTo:function(e,t){switch(t=t||"trigger",t.toLowerCase()){case"skip":x=e,h.setLocation(e);break;case"replace":window.location.replace(e);break;default:h.lookupRoute("get",e)?h.setLocation(e):window.location.href=e}},replaceLocation:function(e){this.navigateTo(e,"replace")},convertRouteToName:function(e){var t=g.stripParameter(e);return t.substring(0,1).toUpperCase()+t.substring(1)},convertRouteToModuleId:function(e){return g.stripParameter(e)},prepareRouteInfo:function(e){e.url instanceof RegExp||(e.name=e.name||g.convertRouteToName(e.url),e.moduleId=e.moduleId||g.convertRouteToModuleId(e.url),e.hash=e.hash||"#/"+e.url),e.caption=e.caption||e.name,e.settings=e.settings||{}},mapAuto:function(e){e=e||"viewmodels",e+="/",g.autoConvertRouteToModuleId=function(t){return e+g.stripParameter(t)}},mapNav:function(e,t,n){return"string"==typeof e?this.mapRoute(e,t,n,!0):(e.visible=!0,m(e))},mapRoute:function(e,t,n,i){return"string"==typeof e?m({url:e,moduleId:t,name:n,visible:i}):m(e)},map:function(t){if(!e.isArray(t))return m(t);for(var n=[],i=0;t.length>i;i++)n.push(m(t[i]));return n},activate:function(t){return e.defer(function(n){var i;g.dfd=n,b=t,h=Sammy(function(e){for(var t=k(),n=0;t.length>n;n++){var o=t[n];e.get(o.url,v),i=this.routes.get[n],I[""+i.path]=o}e.get("#/",f),e.get(/\#\/(.*)/,p)}),h._checkFormSubmission=function(){return!1},h.before(null,function(e){if(x){if(e.path==="/"+x)return x=null,!1;throw Error("Expected to skip url '"+x+"', but found url '"+e.path+"'")}return!0}),h.log=function(){var t=Array.prototype.slice.call(arguments,0);t.unshift("Sammy"),e.log.apply(e,t)},h.run("#/")}).promise()}}}),e.config({paths:{text:"durandal/amd/text"}}),n("main",["durandal/app","durandal/viewLocator","durandal/system","durandal/plugins/router"],function(e,t,n,i){e.title="Durandal Starter Kit",e.start().then(function(){t.useConvention(),i.useConvention(),i.mapNav("welcome"),i.mapNav("flickr"),e.adaptToDevice(),e.setRoot("viewmodels/shell","entrance")})}),n("durandal/http",[],function(){return{defaultJSONPCallbackParam:"callback",get:function(e,t){return $.ajax(e,{data:t})},jsonp:function(e,t,n){return-1==e.indexOf("=?")&&(n=n||this.defaultJSONPCallbackParam,e+=-1==e.indexOf("?")?"?":"&",e+=n+"=?"),$.ajax({url:e,dataType:"jsonp",data:t})},post:function(e,t){return $.ajax({url:e,data:ko.toJSON(t),type:"POST",contentType:"application/json",dataType:"json"})}}}),n("text",["module"],function(e){var n,i,o=["Msxml2.XMLHTTP","Microsoft.XMLHTTP","Msxml2.XMLHTTP.4.0"],r=/^\s*<\?xml(\s)+version=[\'\"](\d)*.(\d)*[\'\"](\s)*\?>/im,a=/<body[^>]*>\s*([\s\S]+)\s*<\/body>/im,s="undefined"!=typeof location&&location.href,c=s&&location.protocol&&location.protocol.replace(/\:/,""),u=s&&location.hostname,l=s&&(location.port||void 0),d=[],f=e.config&&e.config()||{};return n={version:"2.0.3",strip:function(e){if(e){e=e.replace(r,"");var t=e.match(a);t&&(e=t[1])}else e="";return e},jsEscape:function(e){return e.replace(/(['\\])/g,"\\$1").replace(/[\f]/g,"\\f").replace(/[\b]/g,"\\b").replace(/[\n]/g,"\\n").replace(/[\t]/g,"\\t").replace(/[\r]/g,"\\r").replace(/[\u2028]/g,"\\u2028").replace(/[\u2029]/g,"\\u2029")},createXhr:f.createXhr||function(){var e,t,n;if("undefined"!=typeof XMLHttpRequest)return new XMLHttpRequest;if("undefined"!=typeof ActiveXObject)for(t=0;3>t;t+=1){n=o[t];try{e=new ActiveXObject(n)}catch(i){}if(e){o=[n];break}}return e},parseName:function(e){var t=!1,n=e.indexOf("."),i=e.substring(0,n),o=e.substring(n+1,e.length);return n=o.indexOf("!"),-1!==n&&(t=o.substring(n+1,o.length),t="strip"===t,o=o.substring(0,n)),{moduleName:i,ext:o,strip:t}},xdRegExp:/^((\w+)\:)?\/\/([^\/\\]+)/,useXhr:function(e,t,i,o){var r,a,s,c=n.xdRegExp.exec(e);return c?(r=c[2],a=c[3],a=a.split(":"),s=a[1],a=a[0],!(r&&r!==t||a&&a.toLowerCase()!==i.toLowerCase()||(s||a)&&s!==o)):!0},finishLoad:function(e,t,i,o){i=t?n.strip(i):i,f.isBuild&&(d[e]=i),o(i)},load:function(e,t,i,o){if(o.isBuild&&!o.inlineText)return i(),void 0;f.isBuild=o.isBuild;var r=n.parseName(e),a=r.moduleName+"."+r.ext,d=t.toUrl(a),v=f.useXhr||n.useXhr;!s||v(d,c,u,l)?n.get(d,function(t){n.finishLoad(e,r.strip,t,i)},function(e){i.error&&i.error(e)}):t([a],function(e){n.finishLoad(r.moduleName+"."+r.ext,r.strip,e,i)})},write:function(e,t,i){if(d.hasOwnProperty(t)){var o=n.jsEscape(d[t]);i.asModule(e+"!"+t,"define(function () { return '"+o+"';});\n")}},writeFile:function(e,t,i,o,r){var a=n.parseName(t),s=a.moduleName+"."+a.ext,c=i.toUrl(a.moduleName+"."+a.ext)+".js";n.load(s,i,function(){var t=function(e){return o(c,e)};t.asModule=function(e,t){return o.asModule(e,c,t)},n.write(e,s,t,r)},r)}},"node"===f.env||!f.env&&"undefined"!=typeof process&&process.versions&&process.versions.node?(i=t.nodeRequire("fs"),n.get=function(e,t){var n=i.readFileSync(e,"utf8");0===n.indexOf("﻿")&&(n=n.substring(1)),t(n)}):"xhr"===f.env||!f.env&&n.createXhr()?n.get=function(e,t,i){var o=n.createXhr();o.open("GET",e,!0),f.onXhr&&f.onXhr(o,e),o.onreadystatechange=function(){var n,r;4===o.readyState&&(n=o.status,n>399&&600>n?(r=Error(e+" HTTP status: "+n),r.xhr=o,i(r)):t(o.responseText))},o.send(null)}:("rhino"===f.env||!f.env&&"undefined"!=typeof Packages&&"undefined"!=typeof java)&&(n.get=function(e,t){var n,i,o="utf-8",r=new java.io.File(e),a=java.lang.System.getProperty("line.separator"),s=new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(r),o)),c="";try{for(n=new java.lang.StringBuffer,i=s.readLine(),i&&i.length()&&65279===i.charAt(0)&&(i=i.substring(1)),n.append(i);null!==(i=s.readLine());)n.append(a),n.append(i);c=""+n+""}finally{s.close()}t(c)}),n}),n("text!durandal/messageBox.html",[],function(){return'<div class="messageBox">\r\n    <div class="modal-header">\r\n        <h3 data-bind="html: title"></h3>\r\n    </div>\r\n    <div class="modal-body">\r\n        <p class="message" data-bind="html: message"></p>\r\n    </div>\r\n    <div class="modal-footer" data-bind="foreach: options">\r\n        <button class="btn" data-bind="click: function () { $parent.selectOption($data); }, html: $data, css: { \'btn-primary\': $index() == 0, autofocus: $index() == 0 }"></button>\r\n    </div>\r\n</div>'}),n("durandal/messageBox",[],function(){var e=function(t,n,i){this.message=t,this.title=n||e.defaultTitle,this.options=i||e.defaultOptions};return e.prototype.selectOption=function(e){this.modal.close(e)},e.prototype.activate=function(t){t&&(this.message=t.message,this.title=t.title||e.defaultTitle,this.options=t.options||e.defaultOptions)},e.defaultTitle="Application",e.defaultOptions=["Ok"],e}),n("durandal/transitions/entrance",["../system"],function(e){var t=100,n=function(n,i,o){return e.defer(function(e){function r(){e.resolve()}function a(){o.keepScrollPosition||$(document).scrollTop(0)}function s(){a(),o.cacheViews?o.composingNewView&&ko.virtualElements.prepend(n,i):(ko.virtualElements.emptyNode(n),ko.virtualElements.prepend(n,i));
-var e={marginLeft:"20px",marginRight:"-20px",opacity:0,display:"block"},t={marginRight:0,marginLeft:0,opacity:1};$(i).css(e),$(i).animate(t,u,"swing",r)}if(i){var c=$(o.activeView),u=o.duration||500;c.length?c.fadeOut(t,s):s()}else a(),o.activeView?$(o.activeView).fadeOut(t,function(){o.cacheViews||ko.virtualElements.emptyNode(n),r()}):(o.cacheViews||ko.virtualElements.emptyNode(n),r())}).promise()};return n}),n("durandal/widgets/expander/controller",["durandal/widget"],function(e){var t=function(e,t){this.settings=t};return t.prototype.getHeaderText=function(e){return this.settings.headerProperty?e[this.settings.headerProperty]:""+e},t.prototype.afterRenderItem=function(t){var n=e.getParts(t),i=$(n.itemContainer);i.hide(),$(n.headerContainer).bind("click",function(){i.toggle("fast")})},t}),n("text!durandal/widgets/expander/view.html",[],function(){return'<div class="accordion" data-bind="foreach: { data: settings.items, afterRender: afterRenderItem }">\r\n  <div class="accordion-group">\r\n    <div class="accordion-heading">\r\n      <a data-part="headerContainer" href="#" class="accordion-toggle">\r\n        <div data-part="header" data-bind="html: $parent.getHeaderText($data)"></div>\r\n      </a>\r\n    </div>\r\n    <div class="accordion-body collapse in">\r\n      <div class="accordion-inner" data-part="itemContainer" >\r\n        <div data-part="item" data-bind="compose: $data"></div>\r\n      </div>\r\n    </div>\r\n  </div>\r\n</div>'}),n("viewmodels/flickr",["durandal/http","durandal/app"],function(e,t){return{displayName:"Flickr",images:ko.observableArray([]),activate:function(){if(!(this.images().length>0)){var t=this;return e.jsonp("http://api.flickr.com/services/feeds/photos_public.gne",{tags:"mount ranier",tagmode:"any",format:"json"},"jsoncallback").then(function(e){t.images(e.items)})}},select:function(e){e.viewUrl="views/detail",t.showModal(e)},canDeactivate:function(){return t.showMessage("Are you sure you want to leave this page?","Navigate",["Yes","No"])}}}),n("viewmodels/shell",["durandal/plugins/router","durandal/app"],function(e,t){return{router:e,search:function(){t.showMessage("Search not yet implemented...")},activate:function(){return e.activate("welcome")}}}),n("viewmodels/welcome",[],function(){var e=function(){this.displayName="Welcome to the Durandal Starter Kit!",this.description="Durandal is a cross-device, cross-platform client framework written in JavaScript and designed to make Single Page Applications (SPAs) easy to create and maintain.",this.features=["Clean MV* Architecture","JS & HTML Modularity","Simple App Lifecycle","Eventing, Modals, Message Boxes, etc.","Navigation & Screen State Management","Consistent Async Programming w/ Promises","App Bundling and Optimization","Use any Backend Technology","Built on top of jQuery, Knockout & RequireJS","Integrates with other libraries such as SammyJS & Bootstrap","Make jQuery & Bootstrap widgets templatable and bindable (or build your own widgets)."]};return e.prototype.viewAttached=function(){},e}),n("text!views/detail.html",[],function(){return'<div class="messageBox autoclose" style="max-width: 425px">\r\n    <div class="modal-header">\r\n        <h3>Details</h3>\r\n    </div>\r\n    <div class="modal-body">\r\n        <p data-bind="html: description"></p>\r\n    </div>\r\n</div>'}),n("text!views/flickr.html",[],function(){return'<section>\r\n    <h2 data-bind="html: displayName"></h2>\r\n    <div class="row-fluid">\r\n        <ul class="thumbnails" data-bind="foreach: images">\r\n            <li>\r\n                <a href="#" class="thumbnail" data-bind="click:$parent.select">\r\n                    <img style="width: 260px; height: 180px;" data-bind="attr: { src: media.m }"/>\r\n                </a>\r\n            </li>\r\n        </ul>\r\n    </div>\r\n</section>'}),n("text!views/shell.html",[],function(){return'<div>\r\n    <div class="navbar navbar-fixed-top">\r\n        <div class="navbar-inner">\r\n            <a class="brand" data-bind="attr: { href: router.visibleRoutes()[0].hash }">\r\n                <i class="icon-home"></i>\r\n                <span>Durandal</span>\r\n            </a>\r\n            <ul class="nav" data-bind="foreach: router.visibleRoutes">\r\n                <li data-bind="css: { active: isActive }">\r\n                    <a data-bind="attr: { href: hash }, html: name"></a>\r\n                </li>\r\n            </ul>\r\n            <div class="loader pull-right" data-bind="css: { active: router.isNavigating }">\r\n                <i class="icon-spinner icon-2x icon-spin"></i>\r\n            </div>\r\n            <form class="navbar-search pull-right" data-bind="submit:search">\r\n                <input type="text" class="search-query" placeholder="Search">\r\n            </form>\r\n        </div>\r\n    </div>\r\n    \r\n    <div class="container-fluid page-host">\r\n        <!--ko compose: { \r\n            model: router.activeItem, //wiring the router\r\n            afterCompose: router.afterCompose, //wiring the router\r\n            transition:\'entrance\', //use the \'entrance\' transition when switching views\r\n            cacheViews:true //telling composition to keep views in the dom, and reuse them (only a good idea with singleton view models)\r\n        }--><!--/ko-->\r\n    </div>\r\n</div>'}),n("text!views/welcome.html",[],function(){return'<section>\r\n    <h2 data-bind="html:displayName"></h2>\r\n    <blockquote data-bind="html:description"></blockquote>\r\n    <h3>Features</h3>\r\n    <ul data-bind="foreach: features">\r\n        <li data-bind="html: $data"></li>\r\n    </ul>\r\n    <div class="alert alert-success">\r\n      <h4>Read Me Please</h4>\r\n        For information about this template and for general documenation please visit <a href="http://www.durandaljs.com">the official site</a> and if you can\'t find \r\n        answers to your questions there, we hope you will join our <a href="https://groups.google.com/forum/?fromgroups#!forum/durandaljs">google group</a>.\r\n    </div>\r\n</section>'}),t(["main"])})();
+define('text', ['module'], function (module) {
+
+
+    var text, fs,
+        progIds = ['Msxml2.XMLHTTP', 'Microsoft.XMLHTTP', 'Msxml2.XMLHTTP.4.0'],
+        xmlRegExp = /^\s*<\?xml(\s)+version=[\'\"](\d)*.(\d)*[\'\"](\s)*\?>/im,
+        bodyRegExp = /<body[^>]*>\s*([\s\S]+)\s*<\/body>/im,
+        hasLocation = typeof location !== 'undefined' && location.href,
+        defaultProtocol = hasLocation && location.protocol && location.protocol.replace(/\:/, ''),
+        defaultHostName = hasLocation && location.hostname,
+        defaultPort = hasLocation && (location.port || undefined),
+        buildMap = [],
+        masterConfig = (module.config && module.config()) || {};
+
+    text = {
+        version: '2.0.3',
+
+        strip: function (content) {
+            //Strips <?xml ...?> declarations so that external SVG and XML
+            //documents can be added to a document without worry. Also, if the string
+            //is an HTML document, only the part inside the body tag is returned.
+            if (content) {
+                content = content.replace(xmlRegExp, "");
+                var matches = content.match(bodyRegExp);
+                if (matches) {
+                    content = matches[1];
+                }
+            } else {
+                content = "";
+            }
+            return content;
+        },
+
+        jsEscape: function (content) {
+            return content.replace(/(['\\])/g, '\\$1')
+                .replace(/[\f]/g, "\\f")
+                .replace(/[\b]/g, "\\b")
+                .replace(/[\n]/g, "\\n")
+                .replace(/[\t]/g, "\\t")
+                .replace(/[\r]/g, "\\r")
+                .replace(/[\u2028]/g, "\\u2028")
+                .replace(/[\u2029]/g, "\\u2029");
+        },
+
+        createXhr: masterConfig.createXhr || function () {
+            //Would love to dump the ActiveX crap in here. Need IE 6 to die first.
+            var xhr, i, progId;
+            if (typeof XMLHttpRequest !== "undefined") {
+                return new XMLHttpRequest();
+            } else if (typeof ActiveXObject !== "undefined") {
+                for (i = 0; i < 3; i += 1) {
+                    progId = progIds[i];
+                    try {
+                        xhr = new ActiveXObject(progId);
+                    } catch (e) { }
+
+                    if (xhr) {
+                        progIds = [progId];  // so faster next time
+                        break;
+                    }
+                }
+            }
+
+            return xhr;
+        },
+
+        /**
+         * Parses a resource name into its component parts. Resource names
+         * look like: module/name.ext!strip, where the !strip part is
+         * optional.
+         * @param {String} name the resource name
+         * @returns {Object} with properties "moduleName", "ext" and "strip"
+         * where strip is a boolean.
+         */
+        parseName: function (name) {
+            var strip = false, index = name.indexOf("."),
+                modName = name.substring(0, index),
+                ext = name.substring(index + 1, name.length);
+
+            index = ext.indexOf("!");
+            if (index !== -1) {
+                //Pull off the strip arg.
+                strip = ext.substring(index + 1, ext.length);
+                strip = strip === "strip";
+                ext = ext.substring(0, index);
+            }
+
+            return {
+                moduleName: modName,
+                ext: ext,
+                strip: strip
+            };
+        },
+
+        xdRegExp: /^((\w+)\:)?\/\/([^\/\\]+)/,
+
+        /**
+         * Is an URL on another domain. Only works for browser use, returns
+         * false in non-browser environments. Only used to know if an
+         * optimized .js version of a text resource should be loaded
+         * instead.
+         * @param {String} url
+         * @returns Boolean
+         */
+        useXhr: function (url, protocol, hostname, port) {
+            var uProtocol, uHostName, uPort,
+                match = text.xdRegExp.exec(url);
+            if (!match) {
+                return true;
+            }
+            uProtocol = match[2];
+            uHostName = match[3];
+
+            uHostName = uHostName.split(':');
+            uPort = uHostName[1];
+            uHostName = uHostName[0];
+
+            return (!uProtocol || uProtocol === protocol) &&
+                   (!uHostName || uHostName.toLowerCase() === hostname.toLowerCase()) &&
+                   ((!uPort && !uHostName) || uPort === port);
+        },
+
+        finishLoad: function (name, strip, content, onLoad) {
+            content = strip ? text.strip(content) : content;
+            if (masterConfig.isBuild) {
+                buildMap[name] = content;
+            }
+            onLoad(content);
+        },
+
+        load: function (name, req, onLoad, config) {
+            //Name has format: some.module.filext!strip
+            //The strip part is optional.
+            //if strip is present, then that means only get the string contents
+            //inside a body tag in an HTML string. For XML/SVG content it means
+            //removing the <?xml ...?> declarations so the content can be inserted
+            //into the current doc without problems.
+
+            // Do not bother with the work if a build and text will
+            // not be inlined.
+            if (config.isBuild && !config.inlineText) {
+                onLoad();
+                return;
+            }
+
+            masterConfig.isBuild = config.isBuild;
+
+            var parsed = text.parseName(name),
+                nonStripName = parsed.moduleName + '.' + parsed.ext,
+                url = req.toUrl(nonStripName),
+                useXhr = (masterConfig.useXhr) ||
+                         text.useXhr;
+
+            //Load the text. Use XHR if possible and in a browser.
+            if (!hasLocation || useXhr(url, defaultProtocol, defaultHostName, defaultPort)) {
+                text.get(url, function (content) {
+                    text.finishLoad(name, parsed.strip, content, onLoad);
+                }, function (err) {
+                    if (onLoad.error) {
+                        onLoad.error(err);
+                    }
+                });
+            } else {
+                //Need to fetch the resource across domains. Assume
+                //the resource has been optimized into a JS module. Fetch
+                //by the module name + extension, but do not include the
+                //!strip part to avoid file system issues.
+                req([nonStripName], function (content) {
+                    text.finishLoad(parsed.moduleName + '.' + parsed.ext,
+                                    parsed.strip, content, onLoad);
+                });
+            }
+        },
+
+        write: function (pluginName, moduleName, write, config) {
+            if (buildMap.hasOwnProperty(moduleName)) {
+                var content = text.jsEscape(buildMap[moduleName]);
+                write.asModule(pluginName + "!" + moduleName,
+                               "define(function () { return '" +
+                                   content +
+                               "';});\n");
+            }
+        },
+
+        writeFile: function (pluginName, moduleName, req, write, config) {
+            var parsed = text.parseName(moduleName),
+                nonStripName = parsed.moduleName + '.' + parsed.ext,
+                //Use a '.js' file name so that it indicates it is a
+                //script that can be loaded across domains.
+                fileName = req.toUrl(parsed.moduleName + '.' +
+                                     parsed.ext) + '.js';
+
+            //Leverage own load() method to load plugin value, but only
+            //write out values that do not have the strip argument,
+            //to avoid any potential issues with ! in file names.
+            text.load(nonStripName, req, function (value) {
+                //Use own write() method to construct full module value.
+                //But need to create shell that translates writeFile's
+                //write() to the right interface.
+                var textWrite = function (contents) {
+                    return write(fileName, contents);
+                };
+                textWrite.asModule = function (moduleName, contents) {
+                    return write.asModule(moduleName, fileName, contents);
+                };
+
+                text.write(pluginName, nonStripName, textWrite, config);
+            }, config);
+        }
+    };
+
+    if (masterConfig.env === 'node' || (!masterConfig.env &&
+            typeof process !== "undefined" &&
+            process.versions &&
+            !!process.versions.node)) {
+        //Using special require.nodeRequire, something added by r.js.
+        fs = require.nodeRequire('fs');
+
+        text.get = function (url, callback) {
+            var file = fs.readFileSync(url, 'utf8');
+            //Remove BOM (Byte Mark Order) from utf8 files if it is there.
+            if (file.indexOf('\uFEFF') === 0) {
+                file = file.substring(1);
+            }
+            callback(file);
+        };
+    } else if (masterConfig.env === 'xhr' || (!masterConfig.env &&
+            text.createXhr())) {
+        text.get = function (url, callback, errback) {
+            var xhr = text.createXhr();
+            xhr.open('GET', url, true);
+
+            //Allow overrides specified in config
+            if (masterConfig.onXhr) {
+                masterConfig.onXhr(xhr, url);
+            }
+
+            xhr.onreadystatechange = function (evt) {
+                var status, err;
+                //Do not explicitly handle errors, those should be
+                //visible via console output in the browser.
+                if (xhr.readyState === 4) {
+                    status = xhr.status;
+                    if (status > 399 && status < 600) {
+                        //An http 4xx or 5xx error. Signal an error.
+                        err = new Error(url + ' HTTP status: ' + status);
+                        err.xhr = xhr;
+                        errback(err);
+                    } else {
+                        callback(xhr.responseText);
+                    }
+                }
+            };
+            xhr.send(null);
+        };
+    } else if (masterConfig.env === 'rhino' || (!masterConfig.env &&
+            typeof Packages !== 'undefined' && typeof java !== 'undefined')) {
+        //Why Java, why is this so awkward?
+        text.get = function (url, callback) {
+            var stringBuffer, line,
+                encoding = "utf-8",
+                file = new java.io.File(url),
+                lineSeparator = java.lang.System.getProperty("line.separator"),
+                input = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(file), encoding)),
+                content = '';
+            try {
+                stringBuffer = new java.lang.StringBuffer();
+                line = input.readLine();
+
+                // Byte Order Mark (BOM) - The Unicode Standard, version 3.0, page 324
+                // http://www.unicode.org/faq/utf_bom.html
+
+                // Note that when we use utf-8, the BOM should appear as "EF BB BF", but it doesn't due to this bug in the JDK:
+                // http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=4508058
+                if (line && line.length() && line.charAt(0) === 0xfeff) {
+                    // Eat the BOM, since we've already found the encoding on this file,
+                    // and we plan to concatenating this buffer with others; the BOM should
+                    // only appear at the top of a file.
+                    line = line.substring(1);
+                }
+
+                stringBuffer.append(line);
+
+                while ((line = input.readLine()) !== null) {
+                    stringBuffer.append(lineSeparator);
+                    stringBuffer.append(line);
+                }
+                //Make sure we return a JavaScript string and not a Java string.
+                content = String(stringBuffer.toString()); //String
+            } finally {
+                input.close();
+            }
+            callback(content);
+        };
+    }
+
+    return text;
+});
+
+define('text!durandal/messageBox.html', [], function () { return '<div class="messageBox">\r\n    <div class="modal-header">\r\n        <h3 data-bind="html: title"></h3>\r\n    </div>\r\n    <div class="modal-body">\r\n        <p class="message" data-bind="html: message"></p>\r\n    </div>\r\n    <div class="modal-footer" data-bind="foreach: options">\r\n        <button class="btn" data-bind="click: function () { $parent.selectOption($data); }, html: $data, css: { \'btn-primary\': $index() == 0, autofocus: $index() == 0 }"></button>\r\n    </div>\r\n</div>'; });
+
+define('durandal/messageBox', [], function () {
+    var MessageBox = function (message, title, options) {
+        this.message = message;
+        this.title = title || MessageBox.defaultTitle;
+        this.options = options || MessageBox.defaultOptions;
+    };
+
+    MessageBox.prototype.selectOption = function (dialogResult) {
+        this.modal.close(dialogResult);
+    };
+
+    MessageBox.prototype.activate = function (config) {
+        if (config) {
+            this.message = config.message;
+            this.title = config.title || MessageBox.defaultTitle;
+            this.options = config.options || MessageBox.defaultOptions;
+        }
+    };
+
+    MessageBox.defaultTitle = 'Application';
+    MessageBox.defaultOptions = ['Ok'];
+
+    return MessageBox;
+});
+define('durandal/plugins/router', ['../system', '../viewModel', '../app'], function (system, viewModel, app) {
+
+    //NOTE: Sammy.js is not required by the core of Durandal. 
+    //However, this plugin leverages it to enable navigation.
+
+    var routesByPath = {},
+        allRoutes = ko.observableArray([]),
+        visibleRoutes = ko.observableArray([]),
+        ready = ko.observable(false),
+        isNavigating = ko.observable(false),
+        sammy,
+        router,
+        previousRoute,
+        previousModule,
+        cancelling = false,
+        activeItem = viewModel.activator(),
+        activeRoute = ko.observable(),
+        navigationDefaultRoute,
+        queue = [],
+        skipRouteUrl;
+
+    var tryActivateRouter = function () {
+        tryActivateRouter = system.noop;
+        ready(true);
+        router.dfd.resolve();
+        delete router.dfd;
+    };
+
+    activeItem.settings.areSameItem = function (currentItem, newItem, activationData) {
+        return false;
+    };
+
+    function redirect(url) {
+        isNavigating(false);
+        system.log('Redirecting');
+        router.navigateTo(url);
+    }
+
+    function cancelNavigation() {
+        cancelling = true;
+        system.log('Cancelling Navigation');
+
+        if (previousRoute) {
+            sammy.setLocation(previousRoute);
+        }
+
+        cancelling = false;
+        isNavigating(false);
+
+        var routeAttempted = sammy.last_location[1].split('#/')[1];
+
+        if (previousRoute || !routeAttempted) {
+            tryActivateRouter();
+        } else if (routeAttempted != navigationDefaultRoute) {
+            window.location.replace("#/" + navigationDefaultRoute);
+        } else {
+            tryActivateRouter();
+        }
+    }
+
+    function completeNavigation(routeInfo, params, module) {
+        activeRoute(routeInfo);
+        router.onNavigationComplete(routeInfo, params, module);
+        previousModule = module;
+        previousRoute = sammy.last_location[1].replace('/', '');
+        tryActivateRouter();
+    }
+
+    function activateRoute(routeInfo, params, module) {
+        system.log('Activating Route', routeInfo, module, params);
+
+        activeItem.activateItem(module, params).then(function (succeeded) {
+            if (succeeded) {
+                completeNavigation(routeInfo, params, module);
+            } else {
+                cancelNavigation();
+            }
+        });
+    }
+
+    function shouldStopNavigation() {
+        return cancelling || (sammy.last_location[1].replace('/', '') == previousRoute);
+    }
+
+    function handleGuardedRoute(routeInfo, params, instance) {
+        var resultOrPromise = router.guardRoute(routeInfo, params, instance);
+        if (resultOrPromise) {
+            if (resultOrPromise.then) {
+                resultOrPromise.then(function (result) {
+                    if (result) {
+                        if (typeof result == 'string') {
+                            redirect(result);
+                        } else {
+                            activateRoute(routeInfo, params, instance);
+                        }
+                    } else {
+                        cancelNavigation();
+                    }
+                });
+            } else {
+                if (typeof resultOrPromise == 'string') {
+                    redirect(resultOrPromise);
+                } else {
+                    activateRoute(routeInfo, params, instance);
+                }
+            }
+        } else {
+            cancelNavigation();
+        }
+    }
+
+    function dequeueRoute() {
+        if (isNavigating()) {
+            return;
+        }
+
+        var next = queue.shift();
+        queue = [];
+
+        if (!next) {
+            return;
+        }
+
+        isNavigating(true);
+
+        system.acquire(next.routeInfo.moduleId).then(function (module) {
+            next.params.routeInfo = next.routeInfo;
+            next.params.router = router;
+
+            var instance = router.getActivatableInstance(next.routeInfo, next.params, module);
+
+            if (router.guardRoute) {
+                handleGuardedRoute(next.routeInfo, next.params, instance);
+            } else {
+                activateRoute(next.routeInfo, next.params, instance);
+            }
+        });
+    }
+
+    function queueRoute(routeInfo, params) {
+        queue.unshift({
+            routeInfo: routeInfo,
+            params: params
+        });
+
+        dequeueRoute();
+    }
+
+    function ensureRoute(route, params) {
+        var routeInfo = routesByPath[route];
+
+        if (shouldStopNavigation()) {
+            return;
+        }
+
+        if (!routeInfo) {
+            if (!router.autoConvertRouteToModuleId) {
+                router.handleInvalidRoute(route, params);
+                return;
+            }
+
+            var routeName = router.convertRouteToName(route);
+            routeInfo = {
+                moduleId: router.autoConvertRouteToModuleId(route, params),
+                name: routeName,
+                caption: routeName
+            };
+        }
+
+        queueRoute(routeInfo, params);
+    }
+
+    function handleDefaultRoute() {
+        ensureRoute(navigationDefaultRoute, this.params || {});
+    }
+
+    function handleMappedRoute() {
+        ensureRoute(this.app.last_route.path.toString(), this.params || {});
+    }
+
+    function handleWildCardRoute() {
+        var params = this.params || {}, route;
+
+        if (router.autoConvertRouteToModuleId) {
+            var fragment = this.path.split('#/');
+
+            if (fragment.length == 2) {
+                var parts = fragment[1].split('/');
+                route = parts[0];
+                params.splat = parts.splice(1);
+                ensureRoute(route, params);
+                return;
+            }
+        }
+
+        router.handleInvalidRoute(this.app.last_location[1], params);
+    }
+
+    function configureRoute(routeInfo) {
+        router.prepareRouteInfo(routeInfo);
+
+        routesByPath[routeInfo.url.toString()] = routeInfo;
+        allRoutes.push(routeInfo);
+
+        if (routeInfo.visible) {
+            routeInfo.isActive = ko.computed(function () {
+                return ready() && activeItem() && activeItem().__moduleId__ == routeInfo.moduleId;
+            });
+
+            visibleRoutes.push(routeInfo);
+        }
+
+        return routeInfo;
+    }
+
+    return router = {
+        ready: ready,
+        allRoutes: allRoutes,
+        visibleRoutes: visibleRoutes,
+        isNavigating: isNavigating,
+        activeItem: activeItem,
+        activeRoute: activeRoute,
+        afterCompose: function () {
+            setTimeout(function () {
+                isNavigating(false);
+                dequeueRoute();
+                router.onRouteComposed && router.onRouteComposed(router.activeRoute());
+            }, 10);
+        },
+        getActivatableInstance: function (routeInfo, params, module) {
+            if (typeof module == 'function') {
+                return new module();
+            } else {
+                return module;
+            }
+        },
+        useConvention: function (rootPath) {
+            rootPath = rootPath == null ? 'viewmodels' : rootPath;
+            if (rootPath) {
+                rootPath += '/';
+            }
+            router.convertRouteToModuleId = function (url) {
+                return rootPath + router.stripParameter(url);
+            };
+        },
+        stripParameter: function (val) {
+            var colonIndex = val.indexOf(':');
+            var length = colonIndex > 0 ? colonIndex - 1 : val.length;
+            return val.substring(0, length);
+        },
+        handleInvalidRoute: function (route, params) {
+            system.log('No Route Found', route, params);
+        },
+        onNavigationComplete: function (routeInfo, params, module) {
+            if (app.title) {
+                document.title = routeInfo.caption + " | " + app.title;
+            } else {
+                document.title = routeInfo.caption;
+            }
+        },
+        navigateBack: function () {
+            window.history.back();
+        },
+        navigateTo: function (url, option) {
+            option = option || 'trigger';
+
+            switch (option.toLowerCase()) {
+                case 'skip':
+                    skipRouteUrl = url;
+                    sammy.setLocation(url);
+                    break;
+                case 'replace':
+                    window.location.replace(url);
+                    break;
+                default:
+                    if (sammy.lookupRoute('get', url) && url.indexOf("http") !== 0) {
+                        sammy.setLocation(url);
+                    } else {
+                        window.location.href = url;
+                    }
+                    break;
+            }
+        },
+        navigateToRoute: function (url, data) {
+
+            var newUrl = url;
+            // find the hash using the url with parameters stripped 
+            for (var route in routesByPath) {
+                if (router.stripParameter(routesByPath[route].url) == url) {
+                    newUrl = routesByPath[route].hash;
+                    break;
+                }
+            }
+
+            // if this is an url with parameters, add data.property for these parameters to the url
+            var colonIndex = newUrl.indexOf(':');
+            if (colonIndex > 0) {
+                var paramstring = newUrl.substring(colonIndex - 1, newUrl.length);
+                var params = paramstring.split('/:');
+                newUrl = router.stripParameter(newUrl);
+                for (var i = 0; i < params.length; i++) {
+                    if (params[i]) {
+                        newUrl += '/' + data[params[i]];
+                    }
+                }
+            }
+
+            sammy.setLocation(newUrl);
+        },
+        replaceLocation: function (url) {
+            this.navigateTo(url, 'replace');
+        },
+        convertRouteToName: function (route) {
+            var value = router.stripParameter(route);
+            return value.substring(0, 1).toUpperCase() + value.substring(1);
+        },
+        convertRouteToModuleId: function (route) {
+            return router.stripParameter(route);
+        },
+        prepareRouteInfo: function (info) {
+            if (!(info.url instanceof RegExp)) {
+                info.name = info.name || router.convertRouteToName(info.url);
+                info.moduleId = info.moduleId || router.convertRouteToModuleId(info.url);
+                info.hash = info.hash || '#/' + info.url;
+            }
+
+            info.caption = info.caption || info.name;
+            info.settings = info.settings || {};
+        },
+        mapAuto: function (path) {
+            path = path || 'viewmodels';
+            path += '/';
+
+            router.autoConvertRouteToModuleId = function (url, params) {
+                return path + router.stripParameter(url);
+            };
+        },
+        mapNav: function (urlOrConfig, moduleId, name) {
+            if (typeof urlOrConfig == "string") {
+                return this.mapRoute(urlOrConfig, moduleId, name, true);
+            }
+
+            urlOrConfig.visible = true;
+            return configureRoute(urlOrConfig);
+        },
+        mapRoute: function (urlOrConfig, moduleId, name, visible) {
+            if (typeof urlOrConfig == "string") {
+                return configureRoute({
+                    url: urlOrConfig,
+                    moduleId: moduleId,
+                    name: name,
+                    visible: visible
+                });
+            } else {
+                return configureRoute(urlOrConfig);
+            }
+        },
+        map: function (routeOrRouteArray) {
+            if (!system.isArray(routeOrRouteArray)) {
+                return configureRoute(routeOrRouteArray);
+            }
+
+            var configured = [];
+            for (var i = 0; i < routeOrRouteArray.length; i++) {
+                configured.push(configureRoute(routeOrRouteArray[i]));
+            }
+            return configured;
+        },
+        deactivate: function () {
+            router.allRoutes.removeAll();
+            router.visibleRoutes.removeAll();
+            sammy && sammy.destroy();
+        },
+        activate: function (defaultRoute) {
+            return system.defer(function (dfd) {
+                var processedRoute;
+
+                router.dfd = dfd;
+                navigationDefaultRoute = defaultRoute;
+
+                sammy = Sammy(function (route) {
+                    var unwrapped = allRoutes();
+
+                    for (var i = 0; i < unwrapped.length; i++) {
+                        var current = unwrapped[i];
+                        route.get(current.url, handleMappedRoute);
+                        processedRoute = this.routes.get[i];
+                        routesByPath[processedRoute.path.toString()] = current;
+                    }
+
+                    route.get('#/', handleDefaultRoute);
+                    route.get(/\#\/(.*)/, handleWildCardRoute);
+                });
+
+                sammy._checkFormSubmission = function () {
+                    return false;
+                };
+
+                sammy.before(null, function (context) {
+                    if (!skipRouteUrl) {
+                        return true;
+                    } else if (context.path === "/" + skipRouteUrl) {
+                        skipRouteUrl = null;
+                        return false;
+                    } else {
+                        system.error(new Error("Expected to skip url '" + skipRouteUrl + "', but found url '" + context.path + "'"));
+                    }
+                });
+
+                sammy.log = function () {
+                    var args = Array.prototype.slice.call(arguments, 0);
+                    args.unshift('Sammy');
+                    system.log.apply(system, args);
+                };
+
+                sammy.run('#/');
+            }).promise();
+        }
+    };
+});
+Durandal.app = require('durandal/app');
+Durandal.composition = require('durandal/composition');
+Durandal.events = require('durandal/events');
+Durandal.http = require('durandal/http');
+Durandal.system = require('durandal/system');
+Durandal.viewEngine = require('durandal/viewEngine');
+Durandal.viewLocator = require('durandal/viewLocator');
+Durandal.viewModel = require('durandal/viewModel');
+Durandal.viewModelBinder = require('durandal/viewModelBinder');
+Durandal.widget = require('durandal/widget');
+Durandal.router = require('durandal/plugins/router');

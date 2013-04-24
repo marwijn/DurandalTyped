@@ -1,4 +1,6 @@
-﻿requirejs.config({
+﻿var x = (function() {
+
+requirejs.config({
     paths: {
         'text': 'durandal/amd/text'
     }
@@ -42,3 +44,6 @@ define(['durandal/app', 'durandal/viewLocator', 'durandal/system', 'durandal/plu
             app.setRoot('Shell', 'entrance');
         });
     });
+
+});
+

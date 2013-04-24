@@ -12,9 +12,11 @@ namespace DurandalTyped {
           .Include("~/Scripts/jquery-{version}.js")
           .Include("~/Scripts/knockout-{version}.js")
           .Include("~/Scripts/sammy-{version}.js")
+          .Include("~/App/main-built.js")
           .Include("~/App/viewmodels/*.js")
           .Include("~/App/durandalts/*.js")
           .Include("~/Scripts/bootstrap.min.js")
+          .Include("~/App/Startup.js")
           );
 
       bundles.Add(

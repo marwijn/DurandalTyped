@@ -1,3 +1,4 @@
+///<reference path='../../Scripts/typings/requirejs/require.d.ts'/>
 var Tioc = (function () {
     function Tioc() {
         this.map = {
@@ -39,4 +40,4 @@ var Tioc = (function () {
     };
     return Tioc;
 })();
-//@ sourceMappingURL=Tioc.js.map
+//@ sourceMappingURL=tioc.js.map
