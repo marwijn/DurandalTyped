@@ -60,4 +60,4 @@ var DurandalTs = (function () {
     };
     return DurandalTs;
 })();
-//@ sourceMappingURL=DurandalTs.js.map
+//@ sourceMappingURL=durandalts.js.map
