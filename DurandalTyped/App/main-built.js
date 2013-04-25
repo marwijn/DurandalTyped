@@ -1,5 +1,4 @@
-var Durandal = function() {
-};
+var Durandal = new Function();
 /**
  * almond 0.2.0 Copyright (c) 2011, The Dojo Foundation All Rights Reserved.
  * Available via the MIT or new BSD license.
@@ -2852,3 +2851,4 @@ Durandal.viewModel = require('durandal/viewModel');
 Durandal.viewModelBinder = require('durandal/viewModelBinder');
 Durandal.widget = require('durandal/widget');
 Durandal.router = require('durandal/plugins/router');
+Durandal.modalDialog = require('durandal/modalDialog');

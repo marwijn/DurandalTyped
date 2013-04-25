@@ -40,4 +40,4 @@ var Tioc = (function () {
     };
     return Tioc;
 })();
-//@ sourceMappingURL=tioc.js.map
+//@ sourceMappingURL=Tioc.js.map
