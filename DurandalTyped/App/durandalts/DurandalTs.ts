@@ -2,11 +2,18 @@
 
 class DurandalTs
 {
-    static setup(system, app, modalDialog, tioc) : void
+    static setup(system, app, modalDialog, tioc, viewLocator) : void
     {
         bindPolyFill();
         setupAcquire(system, tioc);
         setupModalDialog(app, modalDialog);
+        viewLocator.determineFallbackViewId = function (obj) {
+                var funcNameRegex = /function (.{1,})\(/;
+                var results = (funcNameRegex).exec((obj).constructor.toString());
+                var typeName = (results && results.length > 1) ? results[1] : "";
+
+                return 'views/' + typeName.toLowerCase();
+            }
     }
 
     private static setupModalDialog(app, modalDialog)

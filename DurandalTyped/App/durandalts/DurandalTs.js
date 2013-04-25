@@ -1,10 +1,16 @@
 ///<reference path='../../Scripts/typings/requirejs/require.d.ts'/>
 var DurandalTs = (function () {
     function DurandalTs() { }
-    DurandalTs.setup = function setup(system, app, modalDialog, tioc) {
+    DurandalTs.setup = function setup(system, app, modalDialog, tioc, viewLocator) {
         DurandalTs.bindPolyFill();
         DurandalTs.setupAcquire(system, tioc);
         DurandalTs.setupModalDialog(app, modalDialog);
+        viewLocator.determineFallbackViewId = function (obj) {
+            var funcNameRegex = /function (.{1,})\(/;
+            var results = (funcNameRegex).exec((obj).constructor.toString());
+            var typeName = (results && results.length > 1) ? results[1] : "";
+            return 'views/' + typeName.toLowerCase();
+        };
     };
     DurandalTs.setupModalDialog = function setupModalDialog(app, modalDialog) {
         app.showMessage = function (message, title, options) {

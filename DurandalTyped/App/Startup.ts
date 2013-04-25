@@ -18,7 +18,7 @@ Durandal.app.start().then(function () {
     //    var welcome = new Welcome();
     var tioc = new Tioc();
 
-    DurandalTs.setup(Durandal.system, Durandal.app, Durandal.modalDialog, tioc);
+    DurandalTs.setup(Durandal.system, Durandal.app, Durandal.modalDialog, tioc, Durandal.viewLocator);
 
     tioc.RegisterInstance("App", Durandal.app);
     tioc.RegisterInstance("Router", Durandal.router);

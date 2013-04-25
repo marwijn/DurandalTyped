@@ -124,6 +124,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="App_Start\AmdTextTransform.cs" />
     <Compile Include="App_Start\DurandalBundleConfig.cs" />
     <Compile Include="App_Start\DurandalConfig.cs" />
     <Compile Include="App_Start\FilterConfig.cs" />
